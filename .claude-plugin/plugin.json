@@ -1,0 +1,10 @@
+{
+  "name": "super-tester",
+  "description": "QA-tester MCP for AI assistants — Chrome browser automation with selector cache, workflow recording, self-healing replay. Each AI session lives in its own Chrome tab group; learned selectors and workflows persist in SQLite per project.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Super-Tester"
+  },
+  "homepage": "https://github.com/jonayed/super-tester",
+  "keywords": ["browser", "qa", "testing", "automation", "mcp", "chrome"]
+}

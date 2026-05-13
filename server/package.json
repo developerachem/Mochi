@@ -1,0 +1,26 @@
+{
+  "name": "super-tester-server",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "MCP server for the Super-Tester browser bridge — speaks stdio MCP to AI clients and WebSocket to the Chrome extension.",
+  "bin": {
+    "super-tester": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node _smoke.mjs && node _integration.mjs && node _multi-client.mjs",
+    "test:smoke": "node _smoke.mjs",
+    "test:integration": "node _integration.mjs",
+    "test:multi": "node _multi-client.mjs",
+    "test:ws": "node src/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^11.5.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "super-tester",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "QA-tester MCP for AI assistants — Chrome browser automation with selector cache, workflow recording, self-healing replay.",
+  "scripts": {
+    "install:all": "node install.js",
+    "install:plugin": "node install.js --plugin-only",
+    "install:yes": "node install.js --yes",
+    "uninstall": "node install.js --uninstall",
+    "start": "node server/src/index.js",
+    "test": "cd server && npm test",
+    "postinstall": "cd server && npm install"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

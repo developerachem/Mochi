@@ -1,0 +1,12 @@
+{
+  "browser": {
+    "type": "stdio",
+    "command": "node",
+    "args": [
+      "/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/server/src/index.js"
+    ],
+    "env": {
+      "SUPER_TESTER_EXTENSION_PATH": "/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/extension"
+    }
+  }
+}

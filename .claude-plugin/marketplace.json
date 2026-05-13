@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "super-tester",
+  "description": "Local Super-Tester browser automation plugin and MCP server.",
+  "owner": {
+    "name": "Super-Tester"
+  },
+  "plugins": [
+    {
+      "name": "super-tester",
+      "description": "Chrome browser automation MCP with tab-group isolated sessions, screenshots, console and network inspection, workflow memory, and a /browser shortcut.",
+      "author": {
+        "name": "Super-Tester"
+      },
+      "category": "development",
+      "source": "./",
+      "homepage": "https://github.com/jonayed/super-tester"
+    }
+  ]
+}

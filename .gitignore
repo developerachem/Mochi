@@ -1,0 +1,8 @@
+node_modules/
+server/node_modules/
+.DS_Store
+server/.DS_Store
+.super-tester/
+server/.super-tester/
+exports/
+mcp/

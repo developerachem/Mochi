@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Super-Tester Browser Bridge",
+  "version": "0.1.0",
+  "description": "Tab-group-scoped browser automation bridge for AI assistants. Each AI session gets its own Chrome tab group; user's other tabs are untouched.",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "storage",
+    "alarms",
+    "activeTab",
+    "debugger"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Super-Tester"
+  }
+}
