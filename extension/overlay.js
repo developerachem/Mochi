@@ -9,6 +9,7 @@
 
   let config = { enabled: true, cursor: true, hud: true, slowMo: 0 };
   let cursorPos = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+  let cursorVisible = false;
 
   // Host element pinned over the page; closed shadow root keeps the page's
   // CSS out and our DOM unreachable from page scripts.
@@ -26,15 +27,18 @@
   style.textContent = `
     :host, * { box-sizing: border-box; }
     .cursor, .ring, .ripple, .hud { position: fixed; pointer-events: none; will-change: transform, opacity; }
-    .cursor { width: 24px; height: 24px; left: 0; top: 0;
-              transform: translate3d(0,0,0); z-index: 2147483646; }
-    .cursor svg { width: 100%; height: 100%; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.45)); }
-    .ring { border: 3px solid #22d3ee; border-radius: 6px;
-            box-shadow: 0 0 0 6px rgba(34,211,238,0.18);
+    .cursor { width: 36px; height: 36px; left: 0; top: 0;
+              transform: translate3d(0,0,0); z-index: 2147483646;
+              opacity: 0; transition: opacity 180ms ease-out; }
+    .cursor.show { opacity: 1; }
+    .cursor svg { width: 100%; height: 100%; overflow: visible; }
+    .ring { border: 3px solid #f0abfc; border-radius: 8px;
+            box-shadow: 0 0 0 6px rgba(217,70,239,0.18), 0 0 18px rgba(217,70,239,0.35);
             opacity: 0; transition: opacity 200ms ease-out, transform 200ms ease-out; }
-    .ring.fail { border-color: #ef4444; box-shadow: 0 0 0 6px rgba(239,68,68,0.20); }
+    .ring.fail { border-color: #ef4444; box-shadow: 0 0 0 6px rgba(239,68,68,0.20), 0 0 18px rgba(239,68,68,0.35); }
     .ripple { width: 40px; height: 40px; border-radius: 50%;
-              background: rgba(34,211,238,0.35); opacity: 0; }
+              background: radial-gradient(circle, rgba(244,114,182,0.55) 0%, rgba(217,70,239,0.0) 70%);
+              opacity: 0; }
     .hud { top: 16px; left: 50%; transform: translateX(-50%);
            background: rgba(15,23,42,0.86); color: white;
            font: 13px/1.3 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -49,10 +53,33 @@
 
   const cursor = document.createElement("div");
   cursor.className = "cursor";
+  // Neon pink arrow: gradient-filled glassy body with outer magenta glow.
+  // Hotspot is at the SVG's (4,4) tip so visual position lines up with the click target.
   cursor.innerHTML = `
-    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-      <path d="M3 2 L3 18 L8 14 L11 21 L14 20 L11 13 L18 13 Z"
-            fill="white" stroke="#0f172a" stroke-width="1.5" stroke-linejoin="round"/>
+    <svg viewBox="0 0 36 36" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="stCursorFill" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%"  stop-color="#fbcfe8"/>
+          <stop offset="55%" stop-color="#f472b6"/>
+          <stop offset="100%" stop-color="#d946ef"/>
+        </linearGradient>
+        <filter id="stCursorGlow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="2.4" result="b1"/>
+          <feGaussianBlur stdDeviation="5"   result="b2"/>
+          <feMerge>
+            <feMergeNode in="b2"/>
+            <feMergeNode in="b1"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+      </defs>
+      <g filter="url(#stCursorGlow)">
+        <path d="M4 4 L4 26 L11 21 L15 30 L19 28 L15 19 L25 19 Z"
+              fill="url(#stCursorFill)"
+              stroke="#fdf4ff" stroke-width="1.2" stroke-linejoin="round"
+              stroke-opacity="0.85"/>
+        <path d="M6 7 L6 14 L9 12 Z" fill="#fdf4ff" fill-opacity="0.55"/>
+      </g>
     </svg>`;
   cursor.style.transform = `translate3d(${cursorPos.x}px, ${cursorPos.y}px, 0)`;
   root.appendChild(cursor);
@@ -114,27 +141,64 @@
   }
 
   let activeAnim = null;
+  let cursorHideTimer = null;
+
+  function showCursor() {
+    if (!config.enabled || !config.cursor) return;
+    if (cursorHideTimer) { clearTimeout(cursorHideTimer); cursorHideTimer = null; }
+    if (!cursorVisible) {
+      cursor.classList.add("show");
+      cursorVisible = true;
+    }
+  }
+
+  function hideCursorSoon(delayMs = 700) {
+    if (cursorHideTimer) clearTimeout(cursorHideTimer);
+    cursorHideTimer = setTimeout(() => {
+      cursor.classList.remove("show");
+      cursorVisible = false;
+      cursorHideTimer = null;
+    }, delayMs);
+  }
+
+  // Read the cursor's currently-rendered position so we can resume from there
+  // when an animation gets cancelled mid-flight (avoids snapping).
+  function currentCursorPos() {
+    const m = new DOMMatrixReadOnly(getComputedStyle(cursor).transform);
+    if (m.m41 === 0 && m.m42 === 0) return cursorPos;
+    return { x: m.m41, y: m.m42 };
+  }
 
   function animateCursorTo(x, y, durationMs) {
-    // Cancel any in-flight animation: start from current cursor position,
-    // no teleporting. Web Animations API lets us read the resolved transform.
+    const from = activeAnim ? currentCursorPos() : cursorPos;
     if (activeAnim) try { activeAnim.cancel(); } catch {}
-    const from = cursorPos;
     const to = { x, y };
     cursorPos = to;
     if (!config.enabled || !config.cursor) {
       cursor.style.transform = `translate3d(${to.x}px, ${to.y}px, 0)`;
       return Promise.resolve();
     }
+    showCursor();
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const distance = Math.hypot(dx, dy);
+    // Scale duration with distance so short hops feel snappy and long traverses
+    // feel deliberate. Clamp so very small moves aren't instantaneous.
+    const scaled = Math.min(Math.max(durationMs, distance * 1.2), durationMs + 600);
     const anim = cursor.animate(
       [
         { transform: `translate3d(${from.x}px, ${from.y}px, 0)` },
         { transform: `translate3d(${to.x}px, ${to.y}px, 0)` },
       ],
-      { duration: Math.max(50, durationMs), easing: config.slowMo > 0 ? "ease-in-out" : "ease-out", fill: "forwards" }
+      {
+        duration: Math.max(50, scaled),
+        // Spring-ish curve: quick liftoff, gentle settle. ease-in-out for slowMo demos.
+        easing: config.slowMo > 0 ? "ease-in-out" : "cubic-bezier(0.22, 1, 0.36, 1)",
+        fill: "forwards",
+      }
     );
     activeAnim = anim;
-    return anim.finished.catch(() => {});
+    return anim.finished.then(() => { activeAnim = null; }).catch(() => {});
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -142,15 +206,21 @@
     if (msg.kind === "overlay.init") {
       config = { ...config, ...(msg.config ?? {}) };
       cursor.style.display = config.enabled && config.cursor ? "" : "none";
+      if (!config.enabled || !config.cursor) {
+        cursor.classList.remove("show");
+        cursorVisible = false;
+      }
       if (!config.enabled || !config.hud) hud.classList.remove("show");
       sendResponse({ ok: true });
       return;
     }
     if (msg.kind === "overlay.intent") {
-      const dur = config.slowMo > 0 ? Math.max(config.slowMo, 400) : 150;
-      const moved = (typeof msg.x === "number" && typeof msg.y === "number")
-        ? animateCursorTo(msg.x, msg.y, dur)
-        : Promise.resolve();
+      // Cursor visualization is gated on actual mouse coordinates — actions
+      // without (x,y) (type/press/scroll/navigate) don't move the cursor and
+      // don't make it visible, so the overlay isn't a stationary distraction.
+      const hasCoords = (typeof msg.x === "number" && typeof msg.y === "number");
+      const dur = config.slowMo > 0 ? Math.max(config.slowMo, 400) : 220;
+      const moved = hasCoords ? animateCursorTo(msg.x, msg.y, dur) : Promise.resolve();
       if (msg.rect) showRingAt(msg.rect, { fail: false });
       if (typeof msg.text === "string") setHud(msg.text);
       moved.then(() => sendResponse({ ok: true }));
@@ -162,6 +232,9 @@
         flashRippleAt(msg.ripple.x, msg.ripple.y);
       }
       if (typeof msg.text === "string") setHud(msg.text, { fail: msg.ok === false });
+      // Fade the cursor out shortly after — it served its purpose for this action
+      // and will fade back in on the next click. Slower fade in slowMo demos.
+      if (cursorVisible) hideCursorSoon(config.slowMo > 0 ? Math.max(config.slowMo, 1000) : 700);
       sendResponse({ ok: true });
       return;
     }
