@@ -57,12 +57,42 @@
   cursor.style.transform = `translate3d(${cursorPos.x}px, ${cursorPos.y}px, 0)`;
   root.appendChild(cursor);
 
-  // Listener stub — actual handlers added in later tasks.
-  chrome.runtime.onMessage.addListener((msg) => {
+  let activeAnim = null;
+
+  function animateCursorTo(x, y, durationMs) {
+    // Cancel any in-flight animation: start from current cursor position,
+    // no teleporting. Web Animations API lets us read the resolved transform.
+    if (activeAnim) try { activeAnim.cancel(); } catch {}
+    const from = cursorPos;
+    const to = { x, y };
+    cursorPos = to;
+    if (!config.enabled || !config.cursor) {
+      cursor.style.transform = `translate3d(${to.x}px, ${to.y}px, 0)`;
+      return Promise.resolve();
+    }
+    const anim = cursor.animate(
+      [
+        { transform: `translate3d(${from.x}px, ${from.y}px, 0)` },
+        { transform: `translate3d(${to.x}px, ${to.y}px, 0)` },
+      ],
+      { duration: Math.max(50, durationMs), easing: "ease-out", fill: "forwards" }
+    );
+    activeAnim = anim;
+    return anim.finished.catch(() => {});
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || typeof msg.kind !== "string") return;
     if (msg.kind === "overlay.init") {
       config = { ...config, ...(msg.config ?? {}) };
       cursor.style.display = config.enabled && config.cursor ? "" : "none";
+    } else if (msg.kind === "overlay.intent") {
+      const dur = config.slowMo > 0 ? Math.max(config.slowMo, 400) : 150;
+      if (typeof msg.x === "number" && typeof msg.y === "number") {
+        animateCursorTo(msg.x, msg.y, dur).then(() => sendResponse({ ok: true }));
+        return true; // keep the message channel open for async sendResponse
+      }
+      sendResponse({ ok: true });
     }
   });
 })();
