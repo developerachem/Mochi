@@ -288,6 +288,31 @@ chrome.debugger.onDetach.addListener(({ tabId }) => {
   if (tabId != null) attachedTabs.delete(tabId);
 });
 
+const overlayInjected = new Set(); // tabId
+
+async function injectOverlay(tabId, visualsConfig) {
+  if (!visualsConfig?.enabled) return;
+  if (!overlayInjected.has(tabId)) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["overlay.js"],
+      });
+      overlayInjected.add(tabId);
+    } catch {
+      // chrome:// pages and the like — silently skip; the rest of the
+      // automation still works.
+      return;
+    }
+  }
+  try {
+    await chrome.tabs.sendMessage(tabId, { kind: "overlay.init", config: visualsConfig });
+  } catch {
+    // The content script may not be listening yet on the very first inject;
+    // it's idempotent and will pick up the next message.
+  }
+}
+
 // CDP event tap. Routes Runtime + Network events to per-tab ring buffers.
 // Console + exception events become console entries; Network lifecycle events
 // build up a request map. Anything else is ignored.
@@ -571,6 +596,7 @@ async function sessionStart({
   // Attach proactively so console + network capture is running from t=0.
   // If the page is chrome:// or otherwise un-attachable, we silently skip.
   ensureAttached(tab.id).catch(() => {});
+  injectOverlay(tab.id, session.visuals).catch(() => {});
 
   return {
     sessionId: session.id,
@@ -1607,9 +1633,14 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
   }
 });
 
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === "loading") overlayInjected.delete(tabId);
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   tabBuffers.delete(tabId);
+  overlayInjected.delete(tabId);
   const ownerClientId = tabOwner.get(tabId);
   if (!ownerClientId) return;
   tabOwner.delete(tabId);
