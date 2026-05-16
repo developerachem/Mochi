@@ -313,6 +313,43 @@ async function injectOverlay(tabId, visualsConfig) {
   }
 }
 
+async function withVisuals(tabId, clientId, intent, doAction) {
+  const session = sessions.get(clientId);
+  const cfg = session?.visuals;
+  // Lazy re-inject (covers post-navigation re-creates).
+  if (cfg?.enabled) await injectOverlay(tabId, cfg);
+
+  if (cfg?.enabled) {
+    try {
+      await chrome.tabs.sendMessage(tabId, { kind: "overlay.intent", ...intent });
+    } catch {}
+  }
+
+  let result, error;
+  try {
+    result = await doAction();
+  } catch (e) {
+    error = e;
+  }
+
+  if (cfg?.enabled) {
+    const okMessage = {
+      kind: "overlay.result",
+      ok: !error,
+      text: error
+        ? `✗ ${intent.action} failed: ${String(error.message ?? error).slice(0, 120)}`
+        : `✓ ${intent.action} succeeded`,
+      rect: error ? intent.rect : undefined,
+      ripple: !error && intent.x != null && intent.y != null ? { x: intent.x, y: intent.y } : undefined,
+    };
+    try { await chrome.tabs.sendMessage(tabId, okMessage); } catch {}
+    if (cfg.slowMo > 0) await new Promise((r) => setTimeout(r, cfg.slowMo));
+  }
+
+  if (error) throw error;
+  return result;
+}
+
 // CDP event tap. Routes Runtime + Network events to per-tab ring buffers.
 // Console + exception events become console entries; Network lifecycle events
 // build up a request map. Anything else is ignored.
