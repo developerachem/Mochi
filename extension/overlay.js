@@ -131,7 +131,7 @@
         { transform: `translate3d(${from.x}px, ${from.y}px, 0)` },
         { transform: `translate3d(${to.x}px, ${to.y}px, 0)` },
       ],
-      { duration: Math.max(50, durationMs), easing: "ease-out", fill: "forwards" }
+      { duration: Math.max(50, durationMs), easing: config.slowMo > 0 ? "ease-in-out" : "ease-out", fill: "forwards" }
     );
     activeAnim = anim;
     return anim.finished.catch(() => {});

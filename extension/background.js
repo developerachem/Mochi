@@ -347,6 +347,11 @@ async function withVisuals(tabId, clientId, intent, doAction) {
   }
 
   if (cfg?.enabled) {
+    // Action may have navigated the page (e.g. browser_navigate, form submit) —
+    // re-inject so the result reaches the new page. injectOverlay is idempotent;
+    // when no navigation occurred, executeScript is skipped via overlayInjected.
+    await injectOverlay(tabId, cfg);
+
     const okMessage = {
       kind: "overlay.result",
       ok: !error,
