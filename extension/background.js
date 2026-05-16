@@ -78,6 +78,17 @@ function getSession(clientId) {
   return s;
 }
 
+const DEFAULT_VISUALS = { enabled: true, cursor: true, hud: true, slowMo: 0 };
+
+function resolveVisualsConfig(input) {
+  const merged = { ...DEFAULT_VISUALS, ...(input ?? {}) };
+  merged.slowMo = Math.max(0, Math.min(5000, Number(merged.slowMo) || 0));
+  merged.enabled = !!merged.enabled;
+  merged.cursor  = !!merged.cursor;
+  merged.hud     = !!merged.hud;
+  return merged;
+}
+
 function tabIn(s, tabId) { return s.tabIds.has(tabId); }
 
 function targetTab(s, tabId) {
@@ -107,6 +118,7 @@ function serializeSessions() {
     primaryTabId: s.primaryTabId,
     tabIds: [...s.tabIds],
     ownsWindow: !!s.ownsWindow,
+    visuals: s.visuals,
   }));
 }
 
@@ -174,6 +186,7 @@ async function restoreSessions() {
         primaryTabId,
         tabIds: new Set(validIds),
         ownsWindow: !!raw.ownsWindow,
+        visuals: resolveVisualsConfig(raw.visuals),
       };
       sessions.set(raw.clientId, session);
       for (const tabId of validIds) tabOwner.set(tabId, raw.clientId);
@@ -495,6 +508,7 @@ async function sessionStart({
   title = "AI Session", color = "blue", url = "about:blank",
   newWindow = false, width, height, left, top, state,
   bringToFront = true,
+  visuals,
 } = {}, clientId) {
   if (!clientId) throw new Error("session_start: missing clientId");
   // Idempotent — clean up any prior state for this client (including orphan
@@ -540,6 +554,7 @@ async function sessionStart({
     primaryTabId: tab.id,
     tabIds: new Set([tab.id]),
     ownsWindow: !!newWindow,
+    visuals: resolveVisualsConfig(visuals),
   };
   sessions.set(clientId, session);
   tabOwner.set(tab.id, clientId);

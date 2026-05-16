@@ -62,6 +62,16 @@ export const tools = [
         left:   { type: "number" }, top: { type: "number" },
         state:  { type: "string", enum: ["normal","maximized","minimized","fullscreen"] },
         bringToFront: { type: "boolean", default: true, description: "Make the session tab the foreground tab in its window. Default true so SPAs aren't throttled by Chrome's hidden-tab budget." },
+        visuals: {
+          type: "object",
+          description: "Visual feedback layer (animated cursor + target ring + HUD). Defaults: enabled with cursor + hud; slowMo:0.",
+          properties: {
+            enabled: { type: "boolean", default: true,  description: "Master switch — false skips overlay injection." },
+            cursor:  { type: "boolean", default: true,  description: "Show animated cursor + target ring + click ripple (visually coupled)." },
+            hud:     { type: "boolean", default: true,  description: "Show top-center action narration pill." },
+            slowMo:  { type: "number",  default: 0, maximum: 5000, description: "Per-action dwell time in ms after the CDP call. 0 = no wait." },
+          },
+        },
       },
     },
   },
