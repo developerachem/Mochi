@@ -197,28 +197,51 @@ function enqueueClientCommand(clientId, task) {
 
 // ---------------- CDP helpers ----------------
 
+async function describeDebuggerHolder(tabId) {
+  try {
+    const targets = await chrome.debugger.getTargets();
+    const t = targets.find((x) => x.tabId === tabId && x.attached);
+    if (!t) return "unknown holder (DevTools may have just closed)";
+    if (t.extensionId) return `extension id=${t.extensionId}`;
+    return "DevTools or an external debugger";
+  } catch {
+    return "another debugger client";
+  }
+}
+
 async function ensureAttached(tabId) {
   if (attachedTabs.has(tabId)) return;
+  const tryAttach = () => chrome.debugger.attach({ tabId }, DEBUGGER_PROTOCOL_VERSION);
   try {
-    await chrome.debugger.attach({ tabId }, DEBUGGER_PROTOCOL_VERSION);
-    attachedTabs.add(tabId);
-    // Enable the domains we passively observe. Failures are non-fatal — the
-    // attachment is still useful for click/type even if Runtime/Network can't
-    // be enabled (e.g. on chrome:// pages).
-    try { await chrome.debugger.sendCommand({ tabId }, "Page.enable"); } catch {}
-    try { await chrome.debugger.sendCommand({ tabId }, "Runtime.enable"); } catch {}
-    try { await chrome.debugger.sendCommand({ tabId }, "Network.enable"); } catch {}
-    // Make sure a buffer exists so capture from now on is recorded.
-    getTabBuf(tabId);
+    await tryAttach();
   } catch (e) {
     const msg = String(e?.message ?? e);
     if (msg.includes("Another debugger") || msg.includes("Cannot attach")) {
-      throw new Error(
-        "chrome.debugger attach failed — another debugger is attached to this tab (close DevTools or other debugging extensions and try again)"
-      );
+      // One-shot retry: the holder is often DevTools/Lighthouse mid-transition
+      // and releases within a few hundred ms.
+      await new Promise((r) => setTimeout(r, 250));
+      try {
+        await tryAttach();
+      } catch (e2) {
+        const holder = await describeDebuggerHolder(tabId);
+        throw new Error(
+          `chrome.debugger attach failed for tab ${tabId} — ${holder} is debugging it. ` +
+          `Close DevTools (Cmd+Opt+I) or pause the conflicting extension and retry.`
+        );
+      }
+    } else {
+      throw e;
     }
-    throw e;
   }
+  attachedTabs.add(tabId);
+  // Enable the domains we passively observe. Failures are non-fatal — the
+  // attachment is still useful for click/type even if Runtime/Network can't
+  // be enabled (e.g. on chrome:// pages).
+  try { await chrome.debugger.sendCommand({ tabId }, "Page.enable"); } catch {}
+  try { await chrome.debugger.sendCommand({ tabId }, "Runtime.enable"); } catch {}
+  try { await chrome.debugger.sendCommand({ tabId }, "Network.enable"); } catch {}
+  // Make sure a buffer exists so capture from now on is recorded.
+  getTabBuf(tabId);
 }
 
 async function detachIfAttached(tabId) {
@@ -233,7 +256,18 @@ async function detachSessionTabs(s) {
 
 async function cdp(tabId, method, params = {}) {
   await ensureAttached(tabId);
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  } catch (e) {
+    // "Detached while handling command" fires when the page navigates
+    // cross-process or DevTools opens mid-call. Re-attach once and retry.
+    if (String(e?.message ?? e).includes("Detached")) {
+      attachedTabs.delete(tabId);
+      await ensureAttached(tabId);
+      return chrome.debugger.sendCommand({ tabId }, method, params);
+    }
+    throw e;
+  }
 }
 
 chrome.debugger.onDetach.addListener(({ tabId }) => {
@@ -460,12 +494,13 @@ async function dispatch(type, p, clientId) {
 async function sessionStart({
   title = "AI Session", color = "blue", url = "about:blank",
   newWindow = false, width, height, left, top, state,
+  bringToFront = true,
 } = {}, clientId) {
   if (!clientId) throw new Error("session_start: missing clientId");
-  // Idempotent — if this client already has a session, end it first.
-  if (sessions.has(clientId)) {
-    try { await sessionEnd({ closeTabs: false }, clientId); } catch {}
-  }
+  // Idempotent — clean up any prior state for this client (including orphan
+  // tabOwner entries from a half-formed previous start, where sessions.set
+  // never ran but tabOwner did).
+  await forceCleanupClient(clientId);
 
   let win, tab;
   if (newWindow) {
@@ -480,7 +515,14 @@ async function sessionStart({
   } else {
     try { win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }); }
     catch { win = await chrome.windows.create({ type: "normal" }); }
-    tab = await chrome.tabs.create({ url, windowId: win.id, active: false });
+    // active:true by default so the session tab isn't hidden — hidden tabs are
+    // throttled by Chrome (rAF paused, timers ≥1s) and SPAs like React/Cloudflare
+    // never finish rendering. Callers that don't want to steal focus pass
+    // bringToFront:false.
+    tab = await chrome.tabs.create({ url, windowId: win.id, active: !!bringToFront });
+    if (bringToFront) {
+      try { await chrome.windows.update(win.id, { focused: true }); } catch {}
+    }
   }
 
   const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
@@ -503,7 +545,12 @@ async function sessionStart({
   tabOwner.set(tab.id, clientId);
   schedulePersistSessions();
 
-  if (url && url !== "about:blank") await waitForLoad(tab.id);
+  // Don't block the session_start response on a slow page — the session is
+  // already committed (tab exists, group exists, state is recorded). If the
+  // load stalls, the caller can browser_wait or browser_navigate from a known
+  // good state, which is better than letting the broker's request timeout fire
+  // and strand the in-flight start behind the per-client queue.
+  if (url && url !== "about:blank") await waitForLoad(tab.id).catch(() => {});
 
   // Attach proactively so console + network capture is running from t=0.
   // If the page is chrome:// or otherwise un-attachable, we silently skip.
@@ -549,11 +596,32 @@ async function clientCleanup(clientId) {
   return { cleaned: r.ended, clientId };
 }
 
-async function navigate({ url, tabId } = {}, clientId) {
+// Aggressive pre-start cleanup. Covers the "half-formed session" case where a
+// previous session_start crashed/timed out after tabOwner.set but before
+// sessions.set (or vice versa) — sessionEnd alone misses those because it's
+// keyed off sessions.has(clientId).
+async function forceCleanupClient(clientId) {
+  if (sessions.has(clientId)) {
+    try { await sessionEnd({ closeTabs: false }, clientId); } catch {}
+  }
+  for (const [tabId, owner] of [...tabOwner.entries()]) {
+    if (owner !== clientId) continue;
+    await detachIfAttached(tabId);
+    tabOwner.delete(tabId);
+  }
+}
+
+async function navigate({ url, tabId, bringToFront = true } = {}, clientId) {
   if (!url) throw new Error("url is required");
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  await chrome.tabs.update(t, { url });
+  // Bring the tab to foreground so the SPA isn't throttled — see sessionStart
+  // comment for the reason. Pass bringToFront:false to keep the user's current
+  // tab in front (the page will still load but may render slowly).
+  await chrome.tabs.update(t, bringToFront ? { url, active: true } : { url });
+  if (bringToFront) {
+    try { await chrome.windows.update(s.windowId, { focused: true }); } catch {}
+  }
   await waitForLoad(t);
   const finalUrl = await getTabUrl(t) ?? url;
   return { tabId: t, url: finalUrl };
@@ -580,7 +648,13 @@ async function listTabs(clientId) {
       const t = await chrome.tabs.get(id);
       out.push({
         id: t.id, url: t.url, title: t.title,
-        active: t.active, primary: id === s.primaryTabId,
+        // `active` and `foreground` mean the same thing (Chrome's term for
+        // "visible tab in its window"); `primary` is the session's
+        // default-target tab. Orthogonal: a primary tab can be in the
+        // background, which throttles SPAs — see browser_navigate.
+        active: t.active,
+        foreground: t.active,
+        primary: id === s.primaryTabId,
         debuggerAttached: attachedTabs.has(id),
       });
     } catch {}
@@ -801,9 +875,18 @@ async function screenshot({ tabId, fullPage = false, elementRef, format = "png" 
     return { tabId: t, mode: "fullPage", dataUrl: `data:image/${format};base64,${r.data}` };
   }
 
-  const tab = await chrome.tabs.get(t);
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format });
-  return { tabId: t, mode: "viewport", dataUrl };
+  // Use CDP against the specific tabId. chrome.tabs.captureVisibleTab takes a
+  // windowId and shoots whatever's foreground in that window — wrong whenever
+  // the session tab is in the background.
+  const r = await cdp(t, "Page.captureScreenshot", {
+    format, captureBeyondViewport: false, fromSurface: true,
+  });
+  const meta = await chrome.tabs.get(t).catch(() => null);
+  return {
+    tabId: t, mode: "viewport",
+    capturedUrl: meta?.url, capturedTitle: meta?.title,
+    dataUrl: `data:image/${format};base64,${r.data}`,
+  };
 }
 
 // ---------------- window resize + device emulation ----------------
@@ -1326,8 +1409,11 @@ function __focusAndClear(ref, clear) {
     }
   }
   const role = el.getAttribute("role") || el.tagName.toLowerCase();
-  const name = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
-  return { ok: true, role, name };
+  // Cap to 200 chars — pathological aria-label/placeholder values (e.g. a
+  // combobox with a serialized option list) can otherwise balloon the
+  // browser_type response into the hundreds of KB.
+  const rawName = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
+  return { ok: true, role, name: rawName.slice(0, 200) };
 }
 
 function __resolveBox(ref) {
@@ -1337,11 +1423,11 @@ function __resolveBox(ref) {
   const r = el.getBoundingClientRect();
   if (r.width <= 0 || r.height <= 0) return { error: "zero size" };
   const role = el.getAttribute("role") || el.tagName.toLowerCase();
-  const name = el.getAttribute("aria-label") || el.getAttribute("alt") || el.getAttribute("title") ||
-               el.getAttribute("placeholder") ||
-               (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100) || "";
+  const rawName = el.getAttribute("aria-label") || el.getAttribute("alt") || el.getAttribute("title") ||
+                  el.getAttribute("placeholder") ||
+                  (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100) || "";
   return {
-    role, name,
+    role, name: rawName.slice(0, 200),
     box: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
     viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
   };

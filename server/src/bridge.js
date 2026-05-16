@@ -427,12 +427,18 @@ export class Bridge {
   }
 
   _resolvePeerClientId(requested) {
-    if (this._isUsableClientId(requested)) {
+    if (this._isUsableClientId(requested) && requested !== this.localClientId) {
       const existing = this.mcpClients.get(requested);
-      if (!existing || existing.readyState !== WebSocket.OPEN) {
-        if (existing) this.mcpClients.delete(requested);
-        if (requested !== this.localClientId) return requested;
+      if (existing && existing.readyState === WebSocket.OPEN) {
+        // Same client process reconnected before the old socket's close
+        // event fired (reconnect storm / settings reload). Kick the old
+        // socket so we don't accumulate duplicate peers — that's the 1↔2
+        // mcpPeerCount flapping in the wild.
+        this.log(`[bridge] replacing stale mcp-client ws for clientId=${requested}`);
+        try { existing.close(1000, "replaced by new connection"); } catch {}
       }
+      this.mcpClients.delete(requested);
+      return requested;
     }
     return this._mintClientId("c");
   }
