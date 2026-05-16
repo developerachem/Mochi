@@ -61,6 +61,24 @@
   ring.className = "ring";
   root.appendChild(ring);
 
+  const hud = document.createElement("div");
+  hud.className = "hud";
+  root.appendChild(hud);
+
+  let hudHideTimer = null;
+  function setHud(text, opts = {}) {
+    if (!config.enabled || !config.hud) return;
+    hud.textContent = text;
+    hud.classList.toggle("fail", !!opts.fail);
+    hud.classList.add("show");
+    if (hudHideTimer) clearTimeout(hudHideTimer);
+    // In slowMo mode the HUD stays up between actions; in fast mode it
+    // auto-hides 1500ms after the last update.
+    if (!config.slowMo || config.slowMo === 0) {
+      hudHideTimer = setTimeout(() => hud.classList.remove("show"), 1500);
+    }
+  }
+
   function showRingAt(rect, opts = {}) {
     if (!config.enabled || !config.cursor) return;
     ring.classList.toggle("fail", !!opts.fail);
@@ -124,6 +142,7 @@
     if (msg.kind === "overlay.init") {
       config = { ...config, ...(msg.config ?? {}) };
       cursor.style.display = config.enabled && config.cursor ? "" : "none";
+      if (!config.enabled || !config.hud) hud.classList.remove("show");
       sendResponse({ ok: true });
       return;
     }
@@ -133,6 +152,7 @@
         ? animateCursorTo(msg.x, msg.y, dur)
         : Promise.resolve();
       if (msg.rect) showRingAt(msg.rect, { fail: false });
+      if (typeof msg.text === "string") setHud(msg.text);
       moved.then(() => sendResponse({ ok: true }));
       return true;
     }
@@ -141,6 +161,12 @@
       if (msg.ok !== false && msg.ripple && typeof msg.ripple.x === "number") {
         flashRippleAt(msg.ripple.x, msg.ripple.y);
       }
+      if (typeof msg.text === "string") setHud(msg.text, { fail: msg.ok === false });
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.kind === "overlay.hud") {
+      if (typeof msg.text === "string") setHud(msg.text, { fail: !!msg.fail });
       sendResponse({ ok: true });
       return;
     }
