@@ -78,14 +78,15 @@ function getSession(clientId) {
   return s;
 }
 
-const DEFAULT_VISUALS = { enabled: true, cursor: true, hud: true, slowMo: 0 };
+const DEFAULT_VISUALS = Object.freeze({ enabled: true, cursor: true, hud: true, slowMo: 0 });
 
 function resolveVisualsConfig(input) {
   const merged = { ...DEFAULT_VISUALS, ...(input ?? {}) };
-  merged.slowMo = Math.max(0, Math.min(5000, Number(merged.slowMo) || 0));
+  const n = Number(merged.slowMo);
+  merged.slowMo = Math.max(0, Math.min(5000, Number.isNaN(n) ? 0 : n));
   merged.enabled = !!merged.enabled;
-  merged.cursor  = !!merged.cursor;
-  merged.hud     = !!merged.hud;
+  merged.cursor = !!merged.cursor;
+  merged.hud = !!merged.hud;
   return merged;
 }
 

@@ -69,7 +69,7 @@ export const tools = [
             enabled: { type: "boolean", default: true,  description: "Master switch — false skips overlay injection." },
             cursor:  { type: "boolean", default: true,  description: "Show animated cursor + target ring + click ripple (visually coupled)." },
             hud:     { type: "boolean", default: true,  description: "Show top-center action narration pill." },
-            slowMo:  { type: "number",  default: 0, maximum: 5000, description: "Per-action dwell time in ms after the CDP call. 0 = no wait." },
+            slowMo:  { type: "number",  default: 0, minimum: 0, maximum: 5000, description: "Per-action dwell time in ms after the CDP call. 0 = no wait." },
           },
         },
       },
