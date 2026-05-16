@@ -90,6 +90,11 @@ function resolveVisualsConfig(input) {
   return merged;
 }
 
+function quoteLabel(s) {
+  const str = String(s ?? "").trim().slice(0, 60);
+  return str ? `"${str}"` : "element";
+}
+
 function tabIn(s, tabId) { return s.tabIds.has(tabId); }
 
 function targetTab(s, tabId) {
@@ -694,16 +699,23 @@ async function navigate({ url, tabId, bringToFront = true } = {}, clientId) {
   if (!url) throw new Error("url is required");
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  // Bring the tab to foreground so the SPA isn't throttled — see sessionStart
-  // comment for the reason. Pass bringToFront:false to keep the user's current
-  // tab in front (the page will still load but may render slowly).
   await chrome.tabs.update(t, bringToFront ? { url, active: true } : { url });
   if (bringToFront) {
     try { await chrome.windows.update(s.windowId, { focused: true }); } catch {}
   }
-  await waitForLoad(t);
-  const finalUrl = await getTabUrl(t) ?? url;
-  return { tabId: t, url: finalUrl };
+  return withVisuals(t, clientId, {
+    action: "Navigate",
+    text: `▶ Navigating to ${shortUrl(url)}`,
+  }, async () => {
+    await waitForLoad(t);
+    const finalUrl = await getTabUrl(t) ?? url;
+    return { tabId: t, url: finalUrl };
+  });
+}
+
+function shortUrl(url) {
+  try { const u = new URL(url); return u.host + (u.pathname === "/" ? "" : u.pathname); }
+  catch { return String(url).slice(0, 80); }
 }
 
 async function openTab({ url = "about:blank", active = false, makePrimary = true } = {}, clientId) {
@@ -830,14 +842,21 @@ async function click({ ref, tabId, button = "left", clickCount = 1 } = {}, clien
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
   const c = await getElementCenter(t, ref);
-  await dispatchMouseClick(t, c.x, c.y, button, clickCount);
-  return {
-    tabId: t, ref, x: c.x, y: c.y,
-    url: await getTabUrl(t),
-    role: c.role, name: c.name,
-    box: { x: c.boxX, y: c.boxY, w: c.width, h: c.height,
-           viewport: { w: c.viewportW, h: c.viewportH, dpr: c.devicePixelRatio } },
-  };
+  return withVisuals(t, clientId, {
+    action: "Click",
+    text: `▶ Clicking ${quoteLabel(c.name || ref)}`,
+    x: c.x, y: c.y,
+    rect: { left: c.boxX, top: c.boxY, width: c.width, height: c.height },
+  }, async () => {
+    await dispatchMouseClick(t, c.x, c.y, button, clickCount);
+    return {
+      tabId: t, ref, x: c.x, y: c.y,
+      url: await getTabUrl(t),
+      role: c.role, name: c.name,
+      box: { x: c.boxX, y: c.boxY, w: c.width, h: c.height,
+             viewport: { w: c.viewportW, h: c.viewportH, dpr: c.devicePixelRatio } },
+    };
+  });
 }
 
 async function clickAt({ x, y, tabId, button = "left", clickCount = 1 } = {}, clientId) {
@@ -845,8 +864,14 @@ async function clickAt({ x, y, tabId, button = "left", clickCount = 1 } = {}, cl
     throw new Error("x and y (CSS pixel coordinates) are required");
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  await dispatchMouseClick(t, x, y, button, clickCount);
-  return { tabId: t, x, y, url: await getTabUrl(t) };
+  return withVisuals(t, clientId, {
+    action: "Click",
+    text: `▶ Clicking at (${x}, ${y})`,
+    x, y,
+  }, async () => {
+    await dispatchMouseClick(t, x, y, button, clickCount);
+    return { tabId: t, x, y, url: await getTabUrl(t) };
+  });
 }
 
 async function dispatchMouseClick(tabId, x, y, button, clickCount) {
@@ -869,21 +894,30 @@ async function typeText({ ref, text, submit = false, clear = true, tabId } = {},
   });
   if (prep?.error) throw new Error(prep.error);
 
-  if (text.length > 0) await cdp(t, "Input.insertText", { text });
-  if (submit) await dispatchKey(t, "Enter");
-
-  return {
-    tabId: t, ref, submitted: !!submit,
-    url: await getTabUrl(t), role: prep?.role, name: prep?.name,
-  };
+  return withVisuals(t, clientId, {
+    action: "Type",
+    text: `▶ Typing into ${quoteLabel(prep?.name || ref)}${submit ? " (submit)" : ""}`,
+  }, async () => {
+    if (text.length > 0) await cdp(t, "Input.insertText", { text });
+    if (submit) await dispatchKey(t, "Enter");
+    return {
+      tabId: t, ref, submitted: !!submit,
+      url: await getTabUrl(t), role: prep?.role, name: prep?.name,
+    };
+  });
 }
 
 async function pressKey({ key, tabId } = {}, clientId) {
   if (!key) throw new Error("key is required");
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  await dispatchKey(t, key);
-  return { tabId: t, key, url: await getTabUrl(t) };
+  return withVisuals(t, clientId, {
+    action: "Press",
+    text: `▶ Pressing ${quoteLabel(key)}`,
+  }, async () => {
+    await dispatchKey(t, key);
+    return { tabId: t, key, url: await getTabUrl(t) };
+  });
 }
 
 async function dispatchKey(tabId, key) {
@@ -903,20 +937,22 @@ async function dispatchKey(tabId, key) {
 async function scroll({ x = 0, y = 0, deltaX = 0, deltaY = 0, tabId } = {}, clientId) {
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  if (x !== 0 || y !== 0) {
-    await chrome.scripting.executeScript({
-      target: { tabId: t },
-      func: (sx, sy) => window.scrollTo(sx, sy),
-      args: [x, y],
-    });
-  } else {
-    await chrome.scripting.executeScript({
-      target: { tabId: t },
-      func: (dx, dy) => window.scrollBy(dx, dy),
-      args: [deltaX, deltaY],
-    });
-  }
-  return { tabId: t, url: await getTabUrl(t) };
+  return withVisuals(t, clientId, { action: "Scroll", text: "▶ Scrolling" }, async () => {
+    if (x !== 0 || y !== 0) {
+      await chrome.scripting.executeScript({
+        target: { tabId: t },
+        func: (sx, sy) => window.scrollTo(sx, sy),
+        args: [x, y],
+      });
+    } else {
+      await chrome.scripting.executeScript({
+        target: { tabId: t },
+        func: (dx, dy) => window.scrollBy(dx, dy),
+        args: [deltaX, deltaY],
+      });
+    }
+    return { tabId: t, url: await getTabUrl(t) };
+  });
 }
 
 // ---------------- screenshots ----------------
