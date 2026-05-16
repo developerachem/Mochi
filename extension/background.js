@@ -80,8 +80,15 @@ function getSession(clientId) {
 
 const DEFAULT_VISUALS = Object.freeze({ enabled: true, cursor: true, hud: true, slowMo: 0 });
 
-function resolveVisualsConfig(input) {
-  const merged = { ...DEFAULT_VISUALS, ...(input ?? {}) };
+async function resolveVisualsConfig(input) {
+  let base = DEFAULT_VISUALS;
+  if (!input) {
+    try {
+      const stored = (await chrome.storage.local.get(["visualsDefault"])).visualsDefault;
+      if (stored && typeof stored === "object") base = { ...DEFAULT_VISUALS, ...stored };
+    } catch {}
+  }
+  const merged = { ...base, ...(input ?? {}) };
   const n = Number(merged.slowMo);
   merged.slowMo = Math.max(0, Math.min(5000, Number.isNaN(n) ? 0 : n));
   merged.enabled = !!merged.enabled;
@@ -192,7 +199,9 @@ async function restoreSessions() {
         primaryTabId,
         tabIds: new Set(validIds),
         ownsWindow: !!raw.ownsWindow,
-        visuals: resolveVisualsConfig(raw.visuals),
+        visuals: raw.visuals && typeof raw.visuals === "object"
+          ? { ...DEFAULT_VISUALS, ...raw.visuals }
+          : { ...DEFAULT_VISUALS },
       };
       sessions.set(raw.clientId, session);
       for (const tabId of validIds) tabOwner.set(tabId, raw.clientId);
@@ -622,7 +631,7 @@ async function sessionStart({
     primaryTabId: tab.id,
     tabIds: new Set([tab.id]),
     ownsWindow: !!newWindow,
-    visuals: resolveVisualsConfig(visuals),
+    visuals: await resolveVisualsConfig(visuals),
   };
   sessions.set(clientId, session);
   tabOwner.set(tab.id, clientId);
