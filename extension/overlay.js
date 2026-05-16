@@ -57,6 +57,44 @@
   cursor.style.transform = `translate3d(${cursorPos.x}px, ${cursorPos.y}px, 0)`;
   root.appendChild(cursor);
 
+  const ring = document.createElement("div");
+  ring.className = "ring";
+  root.appendChild(ring);
+
+  function showRingAt(rect, opts = {}) {
+    if (!config.enabled || !config.cursor) return;
+    ring.classList.toggle("fail", !!opts.fail);
+    Object.assign(ring.style, {
+      left: `${rect.left - 2}px`,
+      top: `${rect.top - 2}px`,
+      width: `${rect.width + 4}px`,
+      height: `${rect.height + 4}px`,
+      transform: "scale(0.92)",
+      opacity: "0",
+    });
+    // Force a reflow so the next style change animates.
+    void ring.offsetWidth;
+    ring.style.opacity = "1";
+    ring.style.transform = "scale(1.0)";
+    setTimeout(() => { ring.style.opacity = "0"; }, opts.fail ? 800 : 600);
+  }
+
+  function flashRippleAt(x, y) {
+    if (!config.enabled || !config.cursor) return;
+    const r = document.createElement("div");
+    r.className = "ripple";
+    r.style.left = `${x - 20}px`;
+    r.style.top = `${y - 20}px`;
+    root.appendChild(r);
+    r.animate(
+      [
+        { transform: "scale(0.5)", opacity: 0.7 },
+        { transform: "scale(3.0)", opacity: 0 },
+      ],
+      { duration: 300, easing: "ease-out", fill: "forwards" }
+    ).finished.finally(() => r.remove());
+  }
+
   let activeAnim = null;
 
   function animateCursorTo(x, y, durationMs) {
@@ -86,13 +124,25 @@
     if (msg.kind === "overlay.init") {
       config = { ...config, ...(msg.config ?? {}) };
       cursor.style.display = config.enabled && config.cursor ? "" : "none";
-    } else if (msg.kind === "overlay.intent") {
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.kind === "overlay.intent") {
       const dur = config.slowMo > 0 ? Math.max(config.slowMo, 400) : 150;
-      if (typeof msg.x === "number" && typeof msg.y === "number") {
-        animateCursorTo(msg.x, msg.y, dur).then(() => sendResponse({ ok: true }));
-        return true; // keep the message channel open for async sendResponse
+      const moved = (typeof msg.x === "number" && typeof msg.y === "number")
+        ? animateCursorTo(msg.x, msg.y, dur)
+        : Promise.resolve();
+      if (msg.rect) showRingAt(msg.rect, { fail: false });
+      moved.then(() => sendResponse({ ok: true }));
+      return true;
+    }
+    if (msg.kind === "overlay.result") {
+      if (msg.ok === false && msg.rect) showRingAt(msg.rect, { fail: true });
+      if (msg.ok !== false && msg.ripple && typeof msg.ripple.x === "number") {
+        flashRippleAt(msg.ripple.x, msg.ripple.y);
       }
       sendResponse({ ok: true });
+      return;
     }
   });
 })();
