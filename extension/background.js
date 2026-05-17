@@ -240,21 +240,36 @@ async function describeDebuggerHolder(tabId) {
 async function ensureAttached(tabId) {
   if (attachedTabs.has(tabId)) return;
   const tryAttach = () => chrome.debugger.attach({ tabId }, DEBUGGER_PROTOCOL_VERSION);
+  const isTransient = (msg) =>
+    msg.includes("Another debugger") ||
+    msg.includes("Cannot attach") ||
+    // Chrome refuses attach mid-navigation if the tab is momentarily at a
+    // chrome-extension:// or chrome:// target (e.g. some redirects pass
+    // through such pages briefly). The condition usually resolves in <1s.
+    msg.includes("Cannot access");
   try {
     await tryAttach();
   } catch (e) {
     const msg = String(e?.message ?? e);
-    if (msg.includes("Another debugger") || msg.includes("Cannot attach")) {
-      // One-shot retry: the holder is often DevTools/Lighthouse mid-transition
-      // and releases within a few hundred ms.
-      await new Promise((r) => setTimeout(r, 250));
-      try {
-        await tryAttach();
-      } catch (e2) {
+    if (isTransient(msg)) {
+      // Progressive backoff — handles both fast (DevTools mid-transition,
+      // ~250ms) and slow (navigation through a non-debuggable URL, ~1s) cases.
+      let attached = false;
+      for (const delay of [300, 1000]) {
+        await new Promise((r) => setTimeout(r, delay));
+        try { await tryAttach(); attached = true; break; } catch {}
+      }
+      if (!attached) {
         const holder = await describeDebuggerHolder(tabId);
+        let urlHint = "";
+        try {
+          const tab = await chrome.tabs.get(tabId);
+          if (tab?.url) urlHint = ` (current URL: ${tab.url})`;
+        } catch {}
         throw new Error(
-          `chrome.debugger attach failed for tab ${tabId} — ${holder} is debugging it. ` +
-          `Close DevTools (Cmd+Opt+I) or pause the conflicting extension and retry.`
+          `chrome.debugger attach failed for tab ${tabId}${urlHint} — ${holder} is debugging it ` +
+          `or the page is at a non-debuggable URL. Close DevTools (Cmd+Opt+I), pause the ` +
+          `conflicting extension, or navigate away and retry.`
         );
       }
     } else {
@@ -327,6 +342,36 @@ async function injectOverlay(tabId, visualsConfig) {
   }
 }
 
+// Wait briefly for the tab to settle after a user action that may have
+// triggered a navigation. Uses a short grace period because link-clicks don't
+// flip the tab to "loading" synchronously, then a bounded wait so a slow page
+// doesn't make every action stall.
+async function settleAfterAction(tabId) {
+  await new Promise((r) => setTimeout(r, 120));
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (tab?.status === "loading") {
+      await Promise.race([
+        waitForLoad(tabId).catch(() => {}),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
+    }
+  } catch {}
+}
+
+// Show a failure HUD for an action that errored BEFORE reaching withVisuals
+// (e.g. selector resolution failed in click/typeText). Skips ring/ripple
+// because there's no target rect to highlight.
+async function showActionFailureHud(tabId, clientId, action, errorMsg) {
+  const session = sessions.get(clientId);
+  const cfg = session?.visuals;
+  if (!cfg?.enabled) return;
+  try { await injectOverlay(tabId, cfg); } catch {}
+  const text = `✗ ${action} failed: ${String(errorMsg).slice(0, 120)}`;
+  try { await chrome.tabs.sendMessage(tabId, { kind: "overlay.hud", text, fail: true }); } catch {}
+  if (cfg.slowMo > 0) await new Promise((r) => setTimeout(r, cfg.slowMo));
+}
+
 async function withVisuals(tabId, clientId, intent, doAction) {
   const session = sessions.get(clientId);
   const cfg = session?.visuals;
@@ -347,9 +392,11 @@ async function withVisuals(tabId, clientId, intent, doAction) {
   }
 
   if (cfg?.enabled) {
-    // Action may have navigated the page (e.g. browser_navigate, form submit) —
-    // re-inject so the result reaches the new page. injectOverlay is idempotent;
-    // when no navigation occurred, executeScript is skipped via overlayInjected.
+    // Action may have navigated the page (e.g. browser_navigate, form submit).
+    // Wait for the tab to finish loading before re-injecting; otherwise the
+    // success HUD races the new page's overlay listener registration and the
+    // result message gets dropped on the floor.
+    await settleAfterAction(tabId);
     await injectOverlay(tabId, cfg);
 
     const okMessage = {
@@ -855,7 +902,13 @@ async function click({ ref, tabId, button = "left", clickCount = 1 } = {}, clien
   if (!ref) throw new Error("ref (CSS selector) is required");
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  const c = await getElementCenter(t, ref);
+  let c;
+  try {
+    c = await getElementCenter(t, ref);
+  } catch (e) {
+    await showActionFailureHud(t, clientId, "Click", e?.message ?? e);
+    throw e;
+  }
   return withVisuals(t, clientId, {
     action: "Click",
     text: `▶ Clicking ${quoteLabel(c.name || ref)}`,
@@ -901,12 +954,18 @@ async function typeText({ ref, text, submit = false, clear = true, tabId } = {},
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
 
-  const [{ result: prep }] = await chrome.scripting.executeScript({
-    target: { tabId: t },
-    func: __focusAndClear,
-    args: [ref, clear],
-  });
-  if (prep?.error) throw new Error(prep.error);
+  let prep;
+  try {
+    [{ result: prep }] = await chrome.scripting.executeScript({
+      target: { tabId: t },
+      func: __focusAndClear,
+      args: [ref, clear],
+    });
+    if (prep?.error) throw new Error(prep.error);
+  } catch (e) {
+    await showActionFailureHud(t, clientId, "Type", e?.message ?? e);
+    throw e;
+  }
 
   return withVisuals(t, clientId, {
     action: "Type",
