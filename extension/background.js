@@ -587,12 +587,60 @@ async function handleMessage(raw) {
     await restoreSessions();
     const result = await enqueueClientCommand(
       clientId,
-      () => dispatch(type, params ?? {}, clientId)
+      () => dispatchWithAutoRecover(type, params ?? {}, clientId)
     );
     safeSend({ id, ok: true, result });
   } catch (e) {
     safeSend({ id, ok: false, error: String(e?.message ?? e) });
   }
+}
+
+// Commands that manage session lifecycle themselves — never auto-recover for
+// these (would cause loops or double-starts).
+const LIFECYCLE_COMMANDS = new Set(["session_start", "session_end", "client_cleanup"]);
+
+// Wrap dispatch so a "no active session" error transparently re-creates the
+// session from the last cached config and retries once. Triggered when the
+// user manually closes/ungroups the session tabs but keeps issuing commands.
+async function dispatchWithAutoRecover(type, p, clientId) {
+  try {
+    return await dispatch(type, p, clientId);
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    if (!msg.includes("no active session")) throw e;
+    if (LIFECYCLE_COMMANDS.has(type)) throw e;
+    const cfg = await getCachedSessionConfig(clientId);
+    if (!cfg) throw e;
+    await sessionStart(cfg, clientId);
+    const result = await dispatch(type, p, clientId);
+    // Tag the result so the caller (and traces) can see the auto-recovery.
+    if (result && typeof result === "object" && !Array.isArray(result)) {
+      result.recovered = true;
+    }
+    return result;
+  }
+}
+
+const SESSION_CONFIG_KEY_PREFIX = "lastSessionConfig:";
+async function cacheSessionConfig(clientId, config) {
+  if (!clientId) return;
+  try {
+    await chrome.storage.local.set({ [SESSION_CONFIG_KEY_PREFIX + clientId]: config });
+  } catch {}
+}
+async function getCachedSessionConfig(clientId) {
+  if (!clientId) return null;
+  try {
+    const key = SESSION_CONFIG_KEY_PREFIX + clientId;
+    const out = await chrome.storage.local.get([key]);
+    return out[key] ?? null;
+  } catch { return null; }
+}
+async function clearCachedSessionConfig(clientId) {
+  if (!clientId) return;
+  try {
+    await chrome.storage.local.remove(SESSION_CONFIG_KEY_PREFIX + clientId);
+  } catch {}
 }
 
 async function dispatch(type, p, clientId) {
@@ -633,12 +681,13 @@ async function dispatch(type, p, clientId) {
 
 // ---------------- session lifecycle ----------------
 
-async function sessionStart({
-  title = "AI Session", color = "blue", url = "about:blank",
-  newWindow = false, width, height, left, top, state,
-  bringToFront = true,
-  visuals,
-} = {}, clientId) {
+async function sessionStart(input = {}, clientId) {
+  const {
+    title = "AI Session", color = "blue", url = "about:blank",
+    newWindow = false, width, height, left, top, state,
+    bringToFront = true,
+    visuals,
+  } = input;
   if (!clientId) throw new Error("session_start: missing clientId");
   // Idempotent — clean up any prior state for this client (including orphan
   // tabOwner entries from a half-formed previous start, where sessions.set
@@ -701,6 +750,12 @@ async function sessionStart({
   ensureAttached(tab.id).catch(() => {});
   injectOverlay(tab.id, session.visuals).catch(() => {});
 
+  // Persist the inputs so dispatchWithAutoRecover can rebuild this session if
+  // the user closes/ungroups its tabs and keeps issuing commands. We cache
+  // exactly what the caller passed (not derived state like ids), so the
+  // replay matches their original intent.
+  await cacheSessionConfig(clientId, input);
+
   return {
     sessionId: session.id,
     groupId,
@@ -729,6 +784,8 @@ async function sessionEnd({ closeTabs = false } = {}, clientId) {
   for (const id of ids) tabOwner.delete(id);
   sessions.delete(clientId);
   schedulePersistSessions();
+  // Explicit end → don't auto-restart on the next command.
+  await clearCachedSessionConfig(clientId);
 
   return { ended: true, sessionId, tabCount: ids.length };
 }
