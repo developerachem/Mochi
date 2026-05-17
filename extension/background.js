@@ -522,22 +522,52 @@ async function loadState() {
   connectionEnabled = stored.connectionEnabled !== false;
 }
 
-// Render a tiny solid-color dot in the badge instead of text. Chrome's badge
-// is always a small pill behind the text — by matching the text color to the
-// background, the character itself disappears and only the colored pill
-// shows. The dot character ("●") is the narrowest visual we can use so the
-// pill comes out as small/round-looking as the API allows.
-function setBadgeDot(color) {
+// State-color dots are painted DIRECTLY onto the icon (via OffscreenCanvas)
+// instead of using the chrome action badge. The badge has a minimum pill
+// size we can't shrink, and it covered the mochi's face. Compositing a real
+// circle in the corner of the icon gives us a much smaller, cleaner dot.
+let baseIconBitmaps = null;
+async function loadBaseIcons() {
+  if (baseIconBitmaps) return baseIconBitmaps;
+  const sizes = [16, 32, 48, 128];
+  const out = {};
+  for (const s of sizes) {
+    const resp = await fetch(chrome.runtime.getURL(`icons/mochi-${s}.png`));
+    out[s] = await createImageBitmap(await resp.blob());
+  }
+  baseIconBitmaps = out;
+  return out;
+}
+
+async function setIconWithDot(color) {
   try {
-    chrome.action.setBadgeBackgroundColor({ color });
-    chrome.action.setBadgeText({ text: "●" });
-    // setBadgeTextColor is MV3+; guard for older Chrome.
-    if (chrome.action.setBadgeTextColor) {
-      chrome.action.setBadgeTextColor({ color });
+    const bitmaps = await loadBaseIcons();
+    const imageData = {};
+    for (const sizeStr of Object.keys(bitmaps)) {
+      const s = Number(sizeStr);
+      const canvas = new OffscreenCanvas(s, s);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmaps[s], 0, 0);
+      // Dot radius scales with icon size; bottom-right corner with a thin
+      // white ring for contrast against the pink mochi.
+      const r = Math.max(2, Math.round(s * 0.16));
+      const cx = s - r - 1;
+      const cy = s - r - 1;
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.arc(cx, cy, r + Math.max(1, Math.round(s * 0.025)), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      imageData[s] = ctx.getImageData(0, 0, s, s);
     }
+    await chrome.action.setIcon({ imageData });
   } catch {}
 }
 
+// Make sure the text-badge slot is empty — we draw on the icon directly now.
 function clearBadge() {
   try { chrome.action.setBadgeText({ text: "" }); } catch {}
 }
@@ -553,7 +583,7 @@ function connect() {
     // Provisionally show ON; the broker may immediately demote us to standby.
     extensionRole = "active";
     standbyReason = null;
-    setBadgeDot("#16a34a");  // green = active
+    setIconWithDot("#16a34a");  // green = active
     safeSend({ type: "hello", role: "extension", version: chrome.runtime.getManifest().version });
   });
 
@@ -562,7 +592,7 @@ function connect() {
   ws.addEventListener("close", () => {
     extensionRole = "disconnected";
     standbyReason = null;
-    setBadgeDot("#dc2626");  // red = disconnected
+    setIconWithDot("#dc2626");  // red = disconnected
     scheduleReconnect();
   });
 
@@ -575,13 +605,13 @@ function connect() {
 function enterStandby(reason) {
   extensionRole = "standby";
   standbyReason = reason ?? "another profile is active";
-  setBadgeDot("#f59e0b");  // yellow = standby
+  setIconWithDot("#f59e0b");  // yellow = standby
 }
 
 function enterActive() {
   extensionRole = "active";
   standbyReason = null;
-  setBadgeDot("#16a34a");  // green = active
+  setIconWithDot("#16a34a");  // green = active
 }
 
 function requestTakeover() {
@@ -609,6 +639,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 function boot() {
+  clearBadge();  // wipe any leftover text badge from earlier versions
   loadState()
     .then(restoreSessions)
     .catch(() => {})
