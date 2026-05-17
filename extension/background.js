@@ -13,6 +13,11 @@ let ws = null;
 let connectionEnabled = true;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
+// "active" = receiving/dispatching commands. "standby" = WS open but parked,
+// because another Chrome profile's extension owns the broker right now.
+// "disconnected" = no socket.
+let extensionRole = "disconnected";
+let standbyReason = null;
 let persistTimer = null;
 let restorePromise = null;
 
@@ -532,6 +537,9 @@ function connect() {
 
   ws.addEventListener("open", () => {
     reconnectAttempts = 0;
+    // Provisionally show ON; the broker may immediately demote us to standby.
+    extensionRole = "active";
+    standbyReason = null;
     setBadge("ON", "#16a34a");
     safeSend({ type: "hello", role: "extension", version: chrome.runtime.getManifest().version });
   });
@@ -539,11 +547,33 @@ function connect() {
   ws.addEventListener("message", (e) => handleMessage(e.data));
 
   ws.addEventListener("close", () => {
+    extensionRole = "disconnected";
+    standbyReason = null;
     setBadge("OFF", "#dc2626");
     scheduleReconnect();
   });
 
   ws.addEventListener("error", () => { try { ws.close(); } catch {} });
+}
+
+// Called from handleMessage when broker sends {type: "standby"}. We're still
+// connected; we just don't process commands. Don't disconnect — closing would
+// trigger reconnect and we'd fight the active extension all over again.
+function enterStandby(reason) {
+  extensionRole = "standby";
+  standbyReason = reason ?? "another profile is active";
+  setBadge("STBY", "#f59e0b");
+}
+
+function enterActive() {
+  extensionRole = "active";
+  standbyReason = null;
+  setBadge("ON", "#16a34a");
+}
+
+function requestTakeover() {
+  if (extensionRole !== "standby") return;
+  safeSend({ type: "request_takeover" });
 }
 
 function scheduleReconnect() {
@@ -581,6 +611,9 @@ boot();
 async function handleMessage(raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch { return; }
+  // Broker-initiated lifecycle messages have no id and don't go through dispatch.
+  if (msg.type === "standby") { enterStandby(msg.reason); return; }
+  if (msg.type === "promoted") { enterActive(); return; }
   const { id, type, params, clientId } = msg;
   if (id == null) return;
   try {
@@ -1932,10 +1965,15 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
         }));
         sendResponse({
           status: ws?.readyState === WebSocket.OPEN ? "connected" : "disconnected",
+          role: extensionRole,
+          standbyReason,
           sessions: sessionList,
           sessionCount: sessions.size,
           connectionEnabled,
         });
+      } else if (req?.type === "popup_take_over") {
+        requestTakeover();
+        sendResponse({ ok: true });
       } else if (req?.type === "popup_toggle") {
         connectionEnabled = !connectionEnabled;
         await chrome.storage.local.set({ connectionEnabled });

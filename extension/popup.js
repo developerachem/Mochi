@@ -3,12 +3,19 @@ async function refresh() {
   if (!res) return;
   const dot = document.getElementById("status-dot");
   const text = document.getElementById("status-text");
-  if (res.status === "connected") {
+  const takeOverBtn = document.getElementById("take-over-btn");
+  if (res.status === "connected" && res.role === "active") {
     dot.className = "dot ok";
-    text.textContent = "connected";
+    text.textContent = "active";
+    takeOverBtn.style.display = "none";
+  } else if (res.status === "connected" && res.role === "standby") {
+    dot.className = "dot standby";
+    text.textContent = "standby (another profile is active)";
+    takeOverBtn.style.display = "block";
   } else {
     dot.className = "dot bad";
     text.textContent = "disconnected";
+    takeOverBtn.style.display = "none";
   }
   const count = res.sessionCount ?? 0;
   if (count === 0) {
@@ -20,6 +27,11 @@ async function refresh() {
   }
   document.getElementById("enabled-text").textContent = res.connectionEnabled ? "on" : "off";
 }
+
+document.getElementById("take-over-btn").addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "popup_take_over" });
+  refresh();
+});
 
 document.getElementById("toggle-btn").addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "popup_toggle" });

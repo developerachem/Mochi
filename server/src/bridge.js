@@ -40,6 +40,7 @@ export class Bridge {
     // Broker state ---------------------------------------------------------
     this.wss = null;
     this.extensionWs = null;
+    this.extensionStandbys = []; // Set<WebSocket> — extras kept alive but inactive
     this.mcpClients = new Map(); // clientId → ws
     this.clientCleanupTimers = new Map();
     this.extPending = new Map(); // id → { resolve, reject, clientId? }
@@ -130,16 +131,64 @@ export class Bridge {
   }
 
   _attachExtension(ws) {
+    // Multi-profile guard: only ONE extension is active at a time. Any extras
+    // (typically from a second Chrome profile) become standbys — kept alive
+    // on a parked socket, NOT pinged with commands, until the active one
+    // disconnects or a standby explicitly requests takeover. This stops the
+    // last-one-wins reconnect loop two extensions used to do.
     if (this.extensionWs && this.extensionWs !== ws) {
-      try { this.extensionWs.close(); } catch {}
+      this._attachExtensionStandby(ws);
+      return;
     }
     this.extensionWs = ws;
-    this.log("[bridge] extension connected");
+    this.log("[bridge] extension connected (active)");
+    this._wireExtensionMessages(ws);
 
+    ws.on("close", () => {
+      if (this.extensionWs !== ws) return;  // already replaced; nothing to do
+      this.extensionWs = null;
+      for (const [id, p] of this.extPending) {
+        p.reject(new Error("extension disconnected mid-request"));
+        this.extPending.delete(id);
+      }
+      this.log("[bridge] extension disconnected (active)");
+      this._promoteNextStandbyIfAny();
+    });
+    ws.on("error", () => {});
+
+    const waiters = this.extWaiters;
+    this.extWaiters = [];
+    for (const w of waiters) w.resolve();
+  }
+
+  _attachExtensionStandby(ws) {
+    this.extensionStandbys.push(ws);
+    this.log(`[bridge] extension connected (standby; ${this.extensionStandbys.length} waiting)`);
+    try {
+      ws.send(JSON.stringify({
+        type: "standby",
+        reason: "another Super-Tester extension (probably from a different Chrome profile) is currently active",
+      }));
+    } catch {}
+    // Listen for the takeover request; ignore everything else.
+    ws.on("message", (raw) => {
+      let msg;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+      if (msg.type === "request_takeover") this._handleTakeover(ws);
+    });
+    ws.on("close", () => {
+      this.extensionStandbys = this.extensionStandbys.filter((s) => s !== ws);
+      this.log(`[bridge] standby extension disconnected (${this.extensionStandbys.length} remaining)`);
+    });
+    ws.on("error", () => {});
+  }
+
+  _wireExtensionMessages(ws) {
     ws.on("message", (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
       if (msg.type === "hello") return;
+      if (msg.type === "request_takeover") return;  // already active, no-op
       const { id, ok, result, error } = msg;
       const p = this.extPending.get(id);
       if (!p) return;
@@ -147,16 +196,78 @@ export class Bridge {
       if (ok) p.resolve(result);
       else p.reject(new Error(error ?? "unknown extension error"));
     });
+  }
 
-    ws.on("close", () => {
-      if (this.extensionWs === ws) this.extensionWs = null;
+  // A standby is asking to become active. Demote the current active to
+  // standby (it stays connected, just stops receiving commands) and promote
+  // the requester. In-flight commands targeting the demoted ws are rejected
+  // so callers can retry against the new active.
+  _handleTakeover(requestingWs) {
+    if (!this.extensionStandbys.includes(requestingWs)) return;
+    this.extensionStandbys = this.extensionStandbys.filter((s) => s !== requestingWs);
+
+    const previouslyActive = this.extensionWs;
+    if (previouslyActive && previouslyActive !== requestingWs) {
+      try {
+        previouslyActive.send(JSON.stringify({
+          type: "standby",
+          reason: "another Super-Tester profile requested takeover",
+        }));
+      } catch {}
+      this.extensionStandbys.push(previouslyActive);
+      previouslyActive.removeAllListeners("message");
+      previouslyActive.on("message", (raw) => {
+        let msg;
+        try { msg = JSON.parse(raw.toString()); } catch { return; }
+        if (msg.type === "request_takeover") this._handleTakeover(previouslyActive);
+      });
+      for (const [id, p] of this.extPending) {
+        p.reject(new Error("active extension demoted to standby; please retry"));
+        this.extPending.delete(id);
+      }
+    }
+
+    this.extensionWs = requestingWs;
+    requestingWs.removeAllListeners("message");
+    this._wireExtensionMessages(requestingWs);
+    requestingWs.removeAllListeners("close");
+    requestingWs.on("close", () => {
+      if (this.extensionWs !== requestingWs) return;
+      this.extensionWs = null;
       for (const [id, p] of this.extPending) {
         p.reject(new Error("extension disconnected mid-request"));
         this.extPending.delete(id);
       }
-      this.log("[bridge] extension disconnected");
+      this.log("[bridge] extension disconnected (active)");
+      this._promoteNextStandbyIfAny();
     });
-    ws.on("error", () => {});
+    try { requestingWs.send(JSON.stringify({ type: "promoted" })); } catch {}
+    this.log("[bridge] extension takeover: a standby was promoted to active");
+
+    const waiters = this.extWaiters;
+    this.extWaiters = [];
+    for (const w of waiters) w.resolve();
+  }
+
+  _promoteNextStandbyIfAny() {
+    const next = this.extensionStandbys.shift();
+    if (!next) return;
+    this.extensionWs = next;
+    next.removeAllListeners("message");
+    this._wireExtensionMessages(next);
+    next.removeAllListeners("close");
+    next.on("close", () => {
+      if (this.extensionWs !== next) return;
+      this.extensionWs = null;
+      for (const [id, p] of this.extPending) {
+        p.reject(new Error("extension disconnected mid-request"));
+        this.extPending.delete(id);
+      }
+      this.log("[bridge] extension disconnected (active)");
+      this._promoteNextStandbyIfAny();
+    });
+    try { next.send(JSON.stringify({ type: "promoted" })); } catch {}
+    this.log("[bridge] active extension dropped; auto-promoted a standby");
 
     const waiters = this.extWaiters;
     this.extWaiters = [];
