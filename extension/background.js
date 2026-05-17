@@ -522,11 +522,24 @@ async function loadState() {
   connectionEnabled = stored.connectionEnabled !== false;
 }
 
-function setBadge(text, color = "#2563eb") {
+// Render a tiny solid-color dot in the badge instead of text. Chrome's badge
+// is always a small pill behind the text — by matching the text color to the
+// background, the character itself disappears and only the colored pill
+// shows. The dot character ("●") is the narrowest visual we can use so the
+// pill comes out as small/round-looking as the API allows.
+function setBadgeDot(color) {
   try {
     chrome.action.setBadgeBackgroundColor({ color });
-    chrome.action.setBadgeText({ text });
+    chrome.action.setBadgeText({ text: "●" });
+    // setBadgeTextColor is MV3+; guard for older Chrome.
+    if (chrome.action.setBadgeTextColor) {
+      chrome.action.setBadgeTextColor({ color });
+    }
   } catch {}
+}
+
+function clearBadge() {
+  try { chrome.action.setBadgeText({ text: "" }); } catch {}
 }
 
 function connect() {
@@ -540,7 +553,7 @@ function connect() {
     // Provisionally show ON; the broker may immediately demote us to standby.
     extensionRole = "active";
     standbyReason = null;
-    setBadge("ON", "#16a34a");
+    setBadgeDot("#16a34a");  // green = active
     safeSend({ type: "hello", role: "extension", version: chrome.runtime.getManifest().version });
   });
 
@@ -549,7 +562,7 @@ function connect() {
   ws.addEventListener("close", () => {
     extensionRole = "disconnected";
     standbyReason = null;
-    setBadge("OFF", "#dc2626");
+    setBadgeDot("#dc2626");  // red = disconnected
     scheduleReconnect();
   });
 
@@ -562,13 +575,13 @@ function connect() {
 function enterStandby(reason) {
   extensionRole = "standby";
   standbyReason = reason ?? "another profile is active";
-  setBadge("STBY", "#f59e0b");
+  setBadgeDot("#f59e0b");  // yellow = standby
 }
 
 function enterActive() {
   extensionRole = "active";
   standbyReason = null;
-  setBadge("ON", "#16a34a");
+  setBadgeDot("#16a34a");  // green = active
 }
 
 function requestTakeover() {
