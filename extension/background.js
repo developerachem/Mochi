@@ -1777,6 +1777,23 @@ function __assertCondition(kind, target, value) {
   }
 }
 
+// Keep the cached session config's `url` in sync with the primary tab's
+// current location, so dispatchWithAutoRecover restores users to where they
+// actually were — not the about:blank they started from. Skips non-http(s)
+// URLs (chrome://, about:, data:, extension pages) which aren't useful to
+// replay and would break the new tab's startup.
+chrome.tabs.onUpdated.addListener(async (tabId, change) => {
+  if (!change.url) return;
+  if (!/^https?:\/\//i.test(change.url)) return;
+  const clientId = tabOwner.get(tabId);
+  if (!clientId) return;
+  const session = sessions.get(clientId);
+  if (!session || tabId !== session.primaryTabId) return;
+  const cfg = await getCachedSessionConfig(clientId);
+  if (!cfg || cfg.url === change.url) return;
+  await cacheSessionConfig(clientId, { ...cfg, url: change.url });
+});
+
 // ---------------- key metadata for CDP ----------------
 
 function keyMeta(key) {
