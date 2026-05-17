@@ -33,3 +33,27 @@ document.getElementById("end-session-btn").addEventListener("click", async () =>
 
 refresh();
 setInterval(refresh, 1500);
+
+async function loadVisuals() {
+  const v = (await chrome.storage.local.get(["visualsDefault"])).visualsDefault
+    ?? { enabled: true, cursor: true, hud: true, slowMo: 0 };
+  document.getElementById("visuals-cursor").checked = !!v.cursor;
+  document.getElementById("visuals-hud").checked = !!v.hud;
+  document.getElementById("visuals-slowmo").value = String(v.slowMo ?? 0);
+}
+
+async function saveVisuals() {
+  const v = {
+    enabled: true,
+    cursor: document.getElementById("visuals-cursor").checked,
+    hud:    document.getElementById("visuals-hud").checked,
+    slowMo: Math.max(0, Math.min(5000, Number(document.getElementById("visuals-slowmo").value) || 0)),
+  };
+  await chrome.storage.local.set({ visualsDefault: v });
+}
+
+["visuals-cursor","visuals-hud","visuals-slowmo"].forEach((id) => {
+  document.getElementById(id).addEventListener("change", saveVisuals);
+});
+
+loadVisuals();

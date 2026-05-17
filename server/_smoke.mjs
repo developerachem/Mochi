@@ -123,4 +123,17 @@ console.log("✓ click failure rich envelope:", {
   suggestion: failPayload.diagnostics.suggestion,
 });
 
+const sessionStart = tools.find(t => t.name === "browser_session_start");
+const v = sessionStart?.inputSchema?.properties?.visuals;
+if (!v || v.type !== "object") {
+  console.error("session_start missing visuals object schema:", v); process.exit(1);
+}
+for (const k of ["enabled","cursor","hud","slowMo"]) {
+  if (!v.properties?.[k]) { console.error("visuals missing prop:", k); process.exit(1); }
+}
+if (v.properties.enabled.default !== true || v.properties.slowMo.default !== 0) {
+  console.error("visuals defaults wrong:", v.properties); process.exit(1);
+}
+console.log("✓ browser_session_start advertises visuals config");
+
 console.log("\nALL SMOKE TESTS PASSED");

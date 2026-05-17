@@ -50,7 +50,7 @@ export const tools = [
   {
     name: "browser_session_start",
     description:
-      "Start a new browser session. Creates a Chrome tab group with an initial tab; all subsequent operations are scoped to that group. Pass newWindow=true to spawn a fresh Chrome window so window-resize won't disturb the user's other tabs. Idempotent: ends a previous session first.",
+      "Start a new browser session. Creates a Chrome tab group with an initial tab; all subsequent operations are scoped to that group. Pass newWindow=true to spawn a fresh Chrome window so window-resize won't disturb the user's other tabs. By default the session tab is brought to the foreground — hidden tabs are throttled by Chrome and SPAs may never finish rendering. Pass bringToFront:false to keep the user's current tab in front. Idempotent: ends a previous session first.",
     inputSchema: {
       type: "object",
       properties: {
@@ -61,6 +61,17 @@ export const tools = [
         width:  { type: "number" }, height: { type: "number" },
         left:   { type: "number" }, top: { type: "number" },
         state:  { type: "string", enum: ["normal","maximized","minimized","fullscreen"] },
+        bringToFront: { type: "boolean", default: true, description: "Make the session tab the foreground tab in its window. Default true so SPAs aren't throttled by Chrome's hidden-tab budget." },
+        visuals: {
+          type: "object",
+          description: "Visual feedback layer (animated cursor + target ring + HUD). Defaults: enabled with cursor + hud; slowMo:0.",
+          properties: {
+            enabled: { type: "boolean", default: true,  description: "Master switch — false skips overlay injection." },
+            cursor:  { type: "boolean", default: true,  description: "Show animated cursor + target ring + click ripple (visually coupled)." },
+            hud:     { type: "boolean", default: true,  description: "Show top-center action narration pill." },
+            slowMo:  { type: "number",  default: 0, minimum: 0, maximum: 5000, description: "Per-action dwell time in ms after the CDP call. 0 = no wait." },
+          },
+        },
       },
     },
   },
@@ -73,10 +84,14 @@ export const tools = [
   // --- navigation + tabs ---
   {
     name: "browser_navigate",
-    description: "Navigate the active session tab to a URL and wait for load.",
+    description: "Navigate the active session tab to a URL and wait for load. Brings the tab to the foreground by default to avoid Chrome's hidden-tab throttling (SPAs may never finish rendering otherwise). Pass bringToFront:false to keep the user's current tab in front.",
     inputSchema: {
       type: "object",
-      properties: { url: { type: "string" }, tabId: { type: "number" } },
+      properties: {
+        url: { type: "string" },
+        tabId: { type: "number" },
+        bringToFront: { type: "boolean", default: true, description: "Make the session tab the foreground tab in its window before loading." },
+      },
       required: ["url"],
     },
   },
@@ -269,7 +284,7 @@ export const tools = [
   {
     name: "browser_screenshot",
     description:
-      "PNG/JPEG screenshot. Modes: viewport (default, no debugger banner), fullPage (CDP), elementRef (CDP).",
+      "PNG/JPEG screenshot of the session tab (CDP-based; works whether the tab is foreground or background). Modes: viewport (default), fullPage, elementRef.",
     inputSchema: {
       type: "object",
       properties: {
@@ -845,7 +860,14 @@ async function runWireTool(bridge, name, args) {
       break;
     case "browser_type":
       trace.record("type", {
-        ref: args.ref, text: args.text, intent: argIntent,
+        ref: args.ref,
+        // Truncate huge text values so run-history payloads stay bounded.
+        // Pasted secrets/blobs are common; the trace only needs enough to
+        // replay or diagnose.
+        text: typeof args.text === "string" && args.text.length > 500
+          ? `${args.text.slice(0, 500)}…[${args.text.length} chars total]`
+          : args.text,
+        intent: argIntent,
         role: result?.role, name: result?.name,
         submit: !!args.submit, clear: args.clear !== false, url: result?.url,
       });

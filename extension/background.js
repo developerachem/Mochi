@@ -78,6 +78,30 @@ function getSession(clientId) {
   return s;
 }
 
+const DEFAULT_VISUALS = Object.freeze({ enabled: true, cursor: true, hud: true, slowMo: 0 });
+
+async function resolveVisualsConfig(input) {
+  let base = DEFAULT_VISUALS;
+  if (!input) {
+    try {
+      const stored = (await chrome.storage.local.get(["visualsDefault"])).visualsDefault;
+      if (stored && typeof stored === "object") base = { ...DEFAULT_VISUALS, ...stored };
+    } catch {}
+  }
+  const merged = { ...base, ...(input ?? {}) };
+  const n = Number(merged.slowMo);
+  merged.slowMo = Math.max(0, Math.min(5000, Number.isNaN(n) ? 0 : n));
+  merged.enabled = !!merged.enabled;
+  merged.cursor = !!merged.cursor;
+  merged.hud = !!merged.hud;
+  return merged;
+}
+
+function quoteLabel(s) {
+  const str = String(s ?? "").trim().slice(0, 60);
+  return str ? `"${str}"` : "element";
+}
+
 function tabIn(s, tabId) { return s.tabIds.has(tabId); }
 
 function targetTab(s, tabId) {
@@ -107,6 +131,7 @@ function serializeSessions() {
     primaryTabId: s.primaryTabId,
     tabIds: [...s.tabIds],
     ownsWindow: !!s.ownsWindow,
+    visuals: s.visuals,
   }));
 }
 
@@ -174,6 +199,9 @@ async function restoreSessions() {
         primaryTabId,
         tabIds: new Set(validIds),
         ownsWindow: !!raw.ownsWindow,
+        visuals: raw.visuals && typeof raw.visuals === "object"
+          ? { ...DEFAULT_VISUALS, ...raw.visuals }
+          : { ...DEFAULT_VISUALS },
       };
       sessions.set(raw.clientId, session);
       for (const tabId of validIds) tabOwner.set(tabId, raw.clientId);
@@ -197,28 +225,51 @@ function enqueueClientCommand(clientId, task) {
 
 // ---------------- CDP helpers ----------------
 
+async function describeDebuggerHolder(tabId) {
+  try {
+    const targets = await chrome.debugger.getTargets();
+    const t = targets.find((x) => x.tabId === tabId && x.attached);
+    if (!t) return "unknown holder (DevTools may have just closed)";
+    if (t.extensionId) return `extension id=${t.extensionId}`;
+    return "DevTools or an external debugger";
+  } catch {
+    return "another debugger client";
+  }
+}
+
 async function ensureAttached(tabId) {
   if (attachedTabs.has(tabId)) return;
+  const tryAttach = () => chrome.debugger.attach({ tabId }, DEBUGGER_PROTOCOL_VERSION);
   try {
-    await chrome.debugger.attach({ tabId }, DEBUGGER_PROTOCOL_VERSION);
-    attachedTabs.add(tabId);
-    // Enable the domains we passively observe. Failures are non-fatal — the
-    // attachment is still useful for click/type even if Runtime/Network can't
-    // be enabled (e.g. on chrome:// pages).
-    try { await chrome.debugger.sendCommand({ tabId }, "Page.enable"); } catch {}
-    try { await chrome.debugger.sendCommand({ tabId }, "Runtime.enable"); } catch {}
-    try { await chrome.debugger.sendCommand({ tabId }, "Network.enable"); } catch {}
-    // Make sure a buffer exists so capture from now on is recorded.
-    getTabBuf(tabId);
+    await tryAttach();
   } catch (e) {
     const msg = String(e?.message ?? e);
     if (msg.includes("Another debugger") || msg.includes("Cannot attach")) {
-      throw new Error(
-        "chrome.debugger attach failed — another debugger is attached to this tab (close DevTools or other debugging extensions and try again)"
-      );
+      // One-shot retry: the holder is often DevTools/Lighthouse mid-transition
+      // and releases within a few hundred ms.
+      await new Promise((r) => setTimeout(r, 250));
+      try {
+        await tryAttach();
+      } catch (e2) {
+        const holder = await describeDebuggerHolder(tabId);
+        throw new Error(
+          `chrome.debugger attach failed for tab ${tabId} — ${holder} is debugging it. ` +
+          `Close DevTools (Cmd+Opt+I) or pause the conflicting extension and retry.`
+        );
+      }
+    } else {
+      throw e;
     }
-    throw e;
   }
+  attachedTabs.add(tabId);
+  // Enable the domains we passively observe. Failures are non-fatal — the
+  // attachment is still useful for click/type even if Runtime/Network can't
+  // be enabled (e.g. on chrome:// pages).
+  try { await chrome.debugger.sendCommand({ tabId }, "Page.enable"); } catch {}
+  try { await chrome.debugger.sendCommand({ tabId }, "Runtime.enable"); } catch {}
+  try { await chrome.debugger.sendCommand({ tabId }, "Network.enable"); } catch {}
+  // Make sure a buffer exists so capture from now on is recorded.
+  getTabBuf(tabId);
 }
 
 async function detachIfAttached(tabId) {
@@ -233,12 +284,90 @@ async function detachSessionTabs(s) {
 
 async function cdp(tabId, method, params = {}) {
   await ensureAttached(tabId);
-  return chrome.debugger.sendCommand({ tabId }, method, params);
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  } catch (e) {
+    // "Detached while handling command" fires when the page navigates
+    // cross-process or DevTools opens mid-call. Re-attach once and retry.
+    if (String(e?.message ?? e).includes("Detached")) {
+      attachedTabs.delete(tabId);
+      await ensureAttached(tabId);
+      return chrome.debugger.sendCommand({ tabId }, method, params);
+    }
+    throw e;
+  }
 }
 
 chrome.debugger.onDetach.addListener(({ tabId }) => {
   if (tabId != null) attachedTabs.delete(tabId);
 });
+
+const overlayInjected = new Set(); // tabId
+
+async function injectOverlay(tabId, visualsConfig) {
+  if (!visualsConfig?.enabled) return;
+  if (!overlayInjected.has(tabId)) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["overlay.js"],
+      });
+      overlayInjected.add(tabId);
+    } catch {
+      // chrome:// pages and the like — silently skip; the rest of the
+      // automation still works.
+      return;
+    }
+  }
+  try {
+    await chrome.tabs.sendMessage(tabId, { kind: "overlay.init", config: visualsConfig });
+  } catch {
+    // The content script may not be listening yet on the very first inject;
+    // it's idempotent and will pick up the next message.
+  }
+}
+
+async function withVisuals(tabId, clientId, intent, doAction) {
+  const session = sessions.get(clientId);
+  const cfg = session?.visuals;
+  // Lazy re-inject (covers post-navigation re-creates).
+  if (cfg?.enabled) await injectOverlay(tabId, cfg);
+
+  if (cfg?.enabled) {
+    try {
+      await chrome.tabs.sendMessage(tabId, { kind: "overlay.intent", ...intent });
+    } catch {}
+  }
+
+  let result, error;
+  try {
+    result = await doAction();
+  } catch (e) {
+    error = e;
+  }
+
+  if (cfg?.enabled) {
+    // Action may have navigated the page (e.g. browser_navigate, form submit) —
+    // re-inject so the result reaches the new page. injectOverlay is idempotent;
+    // when no navigation occurred, executeScript is skipped via overlayInjected.
+    await injectOverlay(tabId, cfg);
+
+    const okMessage = {
+      kind: "overlay.result",
+      ok: !error,
+      text: error
+        ? `✗ ${intent.action} failed: ${String(error.message ?? error).slice(0, 120)}`
+        : `✓ ${intent.action} succeeded`,
+      rect: error ? intent.rect : undefined,
+      ripple: !error && intent.x != null && intent.y != null ? { x: intent.x, y: intent.y } : undefined,
+    };
+    try { await chrome.tabs.sendMessage(tabId, okMessage); } catch {}
+    if (cfg.slowMo > 0) await new Promise((r) => setTimeout(r, cfg.slowMo));
+  }
+
+  if (error) throw error;
+  return result;
+}
 
 // CDP event tap. Routes Runtime + Network events to per-tab ring buffers.
 // Console + exception events become console entries; Network lifecycle events
@@ -460,12 +589,14 @@ async function dispatch(type, p, clientId) {
 async function sessionStart({
   title = "AI Session", color = "blue", url = "about:blank",
   newWindow = false, width, height, left, top, state,
+  bringToFront = true,
+  visuals,
 } = {}, clientId) {
   if (!clientId) throw new Error("session_start: missing clientId");
-  // Idempotent — if this client already has a session, end it first.
-  if (sessions.has(clientId)) {
-    try { await sessionEnd({ closeTabs: false }, clientId); } catch {}
-  }
+  // Idempotent — clean up any prior state for this client (including orphan
+  // tabOwner entries from a half-formed previous start, where sessions.set
+  // never ran but tabOwner did).
+  await forceCleanupClient(clientId);
 
   let win, tab;
   if (newWindow) {
@@ -480,7 +611,14 @@ async function sessionStart({
   } else {
     try { win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }); }
     catch { win = await chrome.windows.create({ type: "normal" }); }
-    tab = await chrome.tabs.create({ url, windowId: win.id, active: false });
+    // active:true by default so the session tab isn't hidden — hidden tabs are
+    // throttled by Chrome (rAF paused, timers ≥1s) and SPAs like React/Cloudflare
+    // never finish rendering. Callers that don't want to steal focus pass
+    // bringToFront:false.
+    tab = await chrome.tabs.create({ url, windowId: win.id, active: !!bringToFront });
+    if (bringToFront) {
+      try { await chrome.windows.update(win.id, { focused: true }); } catch {}
+    }
   }
 
   const groupId = await chrome.tabs.group({ tabIds: [tab.id] });
@@ -498,16 +636,23 @@ async function sessionStart({
     primaryTabId: tab.id,
     tabIds: new Set([tab.id]),
     ownsWindow: !!newWindow,
+    visuals: await resolveVisualsConfig(visuals),
   };
   sessions.set(clientId, session);
   tabOwner.set(tab.id, clientId);
   schedulePersistSessions();
 
-  if (url && url !== "about:blank") await waitForLoad(tab.id);
+  // Don't block the session_start response on a slow page — the session is
+  // already committed (tab exists, group exists, state is recorded). If the
+  // load stalls, the caller can browser_wait or browser_navigate from a known
+  // good state, which is better than letting the broker's request timeout fire
+  // and strand the in-flight start behind the per-client queue.
+  if (url && url !== "about:blank") await waitForLoad(tab.id).catch(() => {});
 
   // Attach proactively so console + network capture is running from t=0.
   // If the page is chrome:// or otherwise un-attachable, we silently skip.
   ensureAttached(tab.id).catch(() => {});
+  injectOverlay(tab.id, session.visuals).catch(() => {});
 
   return {
     sessionId: session.id,
@@ -549,14 +694,42 @@ async function clientCleanup(clientId) {
   return { cleaned: r.ended, clientId };
 }
 
-async function navigate({ url, tabId } = {}, clientId) {
+// Aggressive pre-start cleanup. Covers the "half-formed session" case where a
+// previous session_start crashed/timed out after tabOwner.set but before
+// sessions.set (or vice versa) — sessionEnd alone misses those because it's
+// keyed off sessions.has(clientId).
+async function forceCleanupClient(clientId) {
+  if (sessions.has(clientId)) {
+    try { await sessionEnd({ closeTabs: false }, clientId); } catch {}
+  }
+  for (const [tabId, owner] of [...tabOwner.entries()]) {
+    if (owner !== clientId) continue;
+    await detachIfAttached(tabId);
+    tabOwner.delete(tabId);
+  }
+}
+
+async function navigate({ url, tabId, bringToFront = true } = {}, clientId) {
   if (!url) throw new Error("url is required");
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  await chrome.tabs.update(t, { url });
-  await waitForLoad(t);
-  const finalUrl = await getTabUrl(t) ?? url;
-  return { tabId: t, url: finalUrl };
+  await chrome.tabs.update(t, bringToFront ? { url, active: true } : { url });
+  if (bringToFront) {
+    try { await chrome.windows.update(s.windowId, { focused: true }); } catch {}
+  }
+  return withVisuals(t, clientId, {
+    action: "Navigate",
+    text: `▶ Navigating to ${shortUrl(url)}`,
+  }, async () => {
+    await waitForLoad(t);
+    const finalUrl = await getTabUrl(t) ?? url;
+    return { tabId: t, url: finalUrl };
+  });
+}
+
+function shortUrl(url) {
+  try { const u = new URL(url); return u.host + (u.pathname === "/" ? "" : u.pathname); }
+  catch { return String(url).slice(0, 80); }
 }
 
 async function openTab({ url = "about:blank", active = false, makePrimary = true } = {}, clientId) {
@@ -580,7 +753,13 @@ async function listTabs(clientId) {
       const t = await chrome.tabs.get(id);
       out.push({
         id: t.id, url: t.url, title: t.title,
-        active: t.active, primary: id === s.primaryTabId,
+        // `active` and `foreground` mean the same thing (Chrome's term for
+        // "visible tab in its window"); `primary` is the session's
+        // default-target tab. Orthogonal: a primary tab can be in the
+        // background, which throttles SPAs — see browser_navigate.
+        active: t.active,
+        foreground: t.active,
+        primary: id === s.primaryTabId,
         debuggerAttached: attachedTabs.has(id),
       });
     } catch {}
@@ -677,14 +856,21 @@ async function click({ ref, tabId, button = "left", clickCount = 1 } = {}, clien
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
   const c = await getElementCenter(t, ref);
-  await dispatchMouseClick(t, c.x, c.y, button, clickCount);
-  return {
-    tabId: t, ref, x: c.x, y: c.y,
-    url: await getTabUrl(t),
-    role: c.role, name: c.name,
-    box: { x: c.boxX, y: c.boxY, w: c.width, h: c.height,
-           viewport: { w: c.viewportW, h: c.viewportH, dpr: c.devicePixelRatio } },
-  };
+  return withVisuals(t, clientId, {
+    action: "Click",
+    text: `▶ Clicking ${quoteLabel(c.name || ref)}`,
+    x: c.x, y: c.y,
+    rect: { left: c.boxX, top: c.boxY, width: c.width, height: c.height },
+  }, async () => {
+    await dispatchMouseClick(t, c.x, c.y, button, clickCount);
+    return {
+      tabId: t, ref, x: c.x, y: c.y,
+      url: await getTabUrl(t),
+      role: c.role, name: c.name,
+      box: { x: c.boxX, y: c.boxY, w: c.width, h: c.height,
+             viewport: { w: c.viewportW, h: c.viewportH, dpr: c.devicePixelRatio } },
+    };
+  });
 }
 
 async function clickAt({ x, y, tabId, button = "left", clickCount = 1 } = {}, clientId) {
@@ -692,8 +878,14 @@ async function clickAt({ x, y, tabId, button = "left", clickCount = 1 } = {}, cl
     throw new Error("x and y (CSS pixel coordinates) are required");
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  await dispatchMouseClick(t, x, y, button, clickCount);
-  return { tabId: t, x, y, url: await getTabUrl(t) };
+  return withVisuals(t, clientId, {
+    action: "Click",
+    text: `▶ Clicking at (${x}, ${y})`,
+    x, y,
+  }, async () => {
+    await dispatchMouseClick(t, x, y, button, clickCount);
+    return { tabId: t, x, y, url: await getTabUrl(t) };
+  });
 }
 
 async function dispatchMouseClick(tabId, x, y, button, clickCount) {
@@ -716,21 +908,30 @@ async function typeText({ ref, text, submit = false, clear = true, tabId } = {},
   });
   if (prep?.error) throw new Error(prep.error);
 
-  if (text.length > 0) await cdp(t, "Input.insertText", { text });
-  if (submit) await dispatchKey(t, "Enter");
-
-  return {
-    tabId: t, ref, submitted: !!submit,
-    url: await getTabUrl(t), role: prep?.role, name: prep?.name,
-  };
+  return withVisuals(t, clientId, {
+    action: "Type",
+    text: `▶ Typing into ${quoteLabel(prep?.name || ref)}${submit ? " (submit)" : ""}`,
+  }, async () => {
+    if (text.length > 0) await cdp(t, "Input.insertText", { text });
+    if (submit) await dispatchKey(t, "Enter");
+    return {
+      tabId: t, ref, submitted: !!submit,
+      url: await getTabUrl(t), role: prep?.role, name: prep?.name,
+    };
+  });
 }
 
 async function pressKey({ key, tabId } = {}, clientId) {
   if (!key) throw new Error("key is required");
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  await dispatchKey(t, key);
-  return { tabId: t, key, url: await getTabUrl(t) };
+  return withVisuals(t, clientId, {
+    action: "Press",
+    text: `▶ Pressing ${quoteLabel(key)}`,
+  }, async () => {
+    await dispatchKey(t, key);
+    return { tabId: t, key, url: await getTabUrl(t) };
+  });
 }
 
 async function dispatchKey(tabId, key) {
@@ -750,20 +951,22 @@ async function dispatchKey(tabId, key) {
 async function scroll({ x = 0, y = 0, deltaX = 0, deltaY = 0, tabId } = {}, clientId) {
   const s = getSession(clientId);
   const t = targetTab(s, tabId);
-  if (x !== 0 || y !== 0) {
-    await chrome.scripting.executeScript({
-      target: { tabId: t },
-      func: (sx, sy) => window.scrollTo(sx, sy),
-      args: [x, y],
-    });
-  } else {
-    await chrome.scripting.executeScript({
-      target: { tabId: t },
-      func: (dx, dy) => window.scrollBy(dx, dy),
-      args: [deltaX, deltaY],
-    });
-  }
-  return { tabId: t, url: await getTabUrl(t) };
+  return withVisuals(t, clientId, { action: "Scroll", text: "▶ Scrolling" }, async () => {
+    if (x !== 0 || y !== 0) {
+      await chrome.scripting.executeScript({
+        target: { tabId: t },
+        func: (sx, sy) => window.scrollTo(sx, sy),
+        args: [x, y],
+      });
+    } else {
+      await chrome.scripting.executeScript({
+        target: { tabId: t },
+        func: (dx, dy) => window.scrollBy(dx, dy),
+        args: [deltaX, deltaY],
+      });
+    }
+    return { tabId: t, url: await getTabUrl(t) };
+  });
 }
 
 // ---------------- screenshots ----------------
@@ -801,9 +1004,18 @@ async function screenshot({ tabId, fullPage = false, elementRef, format = "png" 
     return { tabId: t, mode: "fullPage", dataUrl: `data:image/${format};base64,${r.data}` };
   }
 
-  const tab = await chrome.tabs.get(t);
-  const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format });
-  return { tabId: t, mode: "viewport", dataUrl };
+  // Use CDP against the specific tabId. chrome.tabs.captureVisibleTab takes a
+  // windowId and shoots whatever's foreground in that window — wrong whenever
+  // the session tab is in the background.
+  const r = await cdp(t, "Page.captureScreenshot", {
+    format, captureBeyondViewport: false, fromSurface: true,
+  });
+  const meta = await chrome.tabs.get(t).catch(() => null);
+  return {
+    tabId: t, mode: "viewport",
+    capturedUrl: meta?.url, capturedTitle: meta?.title,
+    dataUrl: `data:image/${format};base64,${r.data}`,
+  };
 }
 
 // ---------------- window resize + device emulation ----------------
@@ -1326,8 +1538,11 @@ function __focusAndClear(ref, clear) {
     }
   }
   const role = el.getAttribute("role") || el.tagName.toLowerCase();
-  const name = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
-  return { ok: true, role, name };
+  // Cap to 200 chars — pathological aria-label/placeholder values (e.g. a
+  // combobox with a serialized option list) can otherwise balloon the
+  // browser_type response into the hundreds of KB.
+  const rawName = el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("name") || "";
+  return { ok: true, role, name: rawName.slice(0, 200) };
 }
 
 function __resolveBox(ref) {
@@ -1337,11 +1552,11 @@ function __resolveBox(ref) {
   const r = el.getBoundingClientRect();
   if (r.width <= 0 || r.height <= 0) return { error: "zero size" };
   const role = el.getAttribute("role") || el.tagName.toLowerCase();
-  const name = el.getAttribute("aria-label") || el.getAttribute("alt") || el.getAttribute("title") ||
-               el.getAttribute("placeholder") ||
-               (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100) || "";
+  const rawName = el.getAttribute("aria-label") || el.getAttribute("alt") || el.getAttribute("title") ||
+                  el.getAttribute("placeholder") ||
+                  (el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100) || "";
   return {
-    role, name,
+    role, name: rawName.slice(0, 200),
     box: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
     viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
   };
@@ -1505,9 +1720,14 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
   }
 });
 
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === "loading") overlayInjected.delete(tabId);
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
   tabBuffers.delete(tabId);
+  overlayInjected.delete(tabId);
   const ownerClientId = tabOwner.get(tabId);
   if (!ownerClientId) return;
   tabOwner.delete(tabId);
