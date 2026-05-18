@@ -1,0 +1,411 @@
+#!/usr/bin/env bash
+# Synthetic end-to-end test for the continuum plugin's hook + helper pipeline.
+# Simulates what Claude Code's hook runtime would do by feeding crafted JSON to
+# each hook script and asserting on file outputs. No actual Claude session.
+#
+# Usage: bash tests/run-synthetic.sh
+# Exit:  0 on all-pass, 1 on first failure.
+
+set -u
+PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d -t continuum-synth.XXXXXX)"
+trap 'rm -rf "$TMP"' EXIT
+
+PASS=0
+FAIL=0
+log()  { echo "  $*"; }
+ok()   { echo "  ✓ $*"; PASS=$((PASS+1)); }
+fail() { echo "  ✗ $*"; FAIL=$((FAIL+1)); }
+
+run_hook() {
+  # $1 = hook script name (relative to plugin), $2 = json payload string
+  local script="$1" payload="$2"
+  echo "$payload" | node "$PLUGIN_DIR/$script" 2>&1
+}
+
+extract_ctx() {
+  python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('hookSpecificOutput',{}).get('additionalContext',''))" 2>/dev/null
+}
+
+# ---- Setup throwaway repo ----------------------------------------------------
+cd "$TMP"
+git init -q
+git commit -q --allow-empty -m "init"
+REPO="$TMP"
+TRANSCRIPT="$TMP/transcript.jsonl"
+cat > "$TRANSCRIPT" <<'EOF'
+{"role":"user","content":"hello"}
+{"role":"assistant","content":"hi! decided to use MFA login."}
+EOF
+
+echo "[synthetic test: $REPO]"
+echo
+
+# ---- T1: SessionStart on empty repo → bootstrap directive --------------------
+echo "T1 — SessionStart (no .continuum/) emits bootstrap directive"
+OUT="$(run_hook hooks/session_start.js "{\"session_id\":\"s1\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$REPO\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}")"
+CTX="$(echo "$OUT" | extract_ctx)"
+echo "$CTX" | grep -q "No context chain found" && ok "bootstrap directive present" || { fail "missing bootstrap directive"; log "OUT: $OUT"; }
+[ -f "$REPO/.continuum/.session-id" ] && ok "session-id file written" || fail "session-id not written"
+
+# ---- T2: write_link.js creates link 0001 ------------------------------------
+echo
+echo "T2 — write_link.js creates link 0001 with index entry"
+mkdir -p "$REPO/.continuum/chain/links" "$REPO/.continuum/archive/transcripts"
+touch "$REPO/.continuum/chain/index.jsonl"
+ID="$(echo "## Decisions
+- Use MFA" | node "$PLUGIN_DIR/lib/write_link.js" --project-dir "$REPO" --tags "bootstrap,auth")"
+[ "$ID" = "0001" ] && ok "returned id=0001" || fail "expected 0001 got '$ID'"
+[ -f "$REPO/.continuum/chain/links/0001/summary.md" ] && ok "summary.md written" || fail "summary.md missing"
+[ -f "$REPO/.continuum/chain/links/0001/meta.json" ] && ok "meta.json written" || fail "meta.json missing"
+grep -q '"id":1' "$REPO/.continuum/chain/index.jsonl" && ok "index.jsonl appended" || fail "index entry missing"
+
+# ---- T3: second write_link increments id -----------------------------------
+echo
+echo "T3 — second write_link gets id 0002"
+ID2="$(echo "Second link" | node "$PLUGIN_DIR/lib/write_link.js" --project-dir "$REPO" --tags "test")"
+[ "$ID2" = "0002" ] && ok "returned id=0002" || fail "expected 0002 got '$ID2'"
+LINES="$(wc -l < "$REPO/.continuum/chain/index.jsonl" | tr -d ' ')"
+[ "$LINES" = "2" ] && ok "index has 2 lines" || fail "expected 2 lines got $LINES"
+
+# ---- T4: SessionStart with bootstrapped chain loads STATE+links -----------
+echo
+echo "T4 — SessionStart on bootstrapped repo loads STATE.md + tail"
+cat > "$REPO/.continuum/STATE.md" <<'EOF'
+# State
+Decisions: MFA, Postgres 16
+EOF
+OUT2="$(run_hook hooks/session_start.js "{\"session_id\":\"s2\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$REPO\",\"hook_event_name\":\"SessionStart\",\"source\":\"resume\"}")"
+CTX2="$(echo "$OUT2" | extract_ctx)"
+echo "$CTX2" | grep -q "Loaded context chain" && ok "loaded-chain header present" || fail "expected loaded-chain header"
+echo "$CTX2" | grep -q "Decisions: MFA, Postgres 16" && ok "STATE.md content injected" || fail "STATE.md content missing"
+echo "$CTX2" | grep -q "Link 0002" && ok "latest link injected" || fail "latest link missing"
+
+# ---- T5: PreCompact archives + writes sentinel ----------------------------
+echo
+echo "T5 — PreCompact archives transcript + writes sentinel"
+OUT3="$(run_hook hooks/pre_compact.js "{\"session_id\":\"s3\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$REPO\",\"hook_event_name\":\"PreCompact\",\"matcher\":\"manual\"}")"
+[ -f "$REPO/.continuum/.pending-checkpoint" ] && ok "sentinel file written" || fail "sentinel missing"
+COUNT="$(ls "$REPO/.continuum/archive/transcripts/" | grep -c precompact || true)"
+[ "$COUNT" -ge 1 ] && ok "archive file created" || fail "no archive file"
+
+# ---- T6: SessionStart now surfaces the pending sentinel -------------------
+echo
+echo "T6 — next SessionStart surfaces pending sentinel"
+OUT4="$(run_hook hooks/session_start.js "{\"session_id\":\"s4\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$REPO\",\"hook_event_name\":\"SessionStart\",\"source\":\"resume\"}")"
+CTX4="$(echo "$OUT4" | extract_ctx)"
+echo "$CTX4" | grep -q "Pending checkpoint detected" && ok "pending-sentinel warning injected" || fail "sentinel warning missing"
+
+# ---- T7: write_link clears the sentinel -----------------------------------
+echo
+echo "T7 — write_link clears the pending-checkpoint sentinel"
+echo "post-compact recovery link" | node "$PLUGIN_DIR/lib/write_link.js" --project-dir "$REPO" --tags "recovery" > /dev/null
+[ ! -f "$REPO/.continuum/.pending-checkpoint" ] && ok "sentinel cleared" || fail "sentinel still present"
+
+# ---- T8: SessionEnd archives + emits systemMessage -----------------------
+echo
+echo "T8 — SessionEnd archives + writes new sentinel + emits systemMessage"
+OUT5="$(run_hook hooks/session_end.js "{\"session_id\":\"s5\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$REPO\",\"hook_event_name\":\"SessionEnd\",\"why_session_ended\":\"logout\"}")"
+echo "$OUT5" | grep -q '"systemMessage"' && ok "systemMessage emitted" || fail "systemMessage missing"
+echo "$OUT5" | grep -q "sessionend-logout" && ok "archive path mentioned" || fail "archive path missing in message"
+[ -f "$REPO/.continuum/.pending-checkpoint" ] && ok "new sentinel for SessionEnd" || fail "SessionEnd didn't write sentinel"
+
+# ---- T9: status.js reports correct counts ---------------------------------
+echo
+echo "T9 — status.js reports chain health"
+STATUS="$(node "$PLUGIN_DIR/lib/status.js" --project-dir "$REPO")"
+echo "$STATUS" | grep -qF "Chain:** 3 links" && ok "link count correct (3)" || { fail "wrong link count"; log "$STATUS"; }
+echo "$STATUS" | grep -qF "Pending checkpoint" && ok "pending sentinel reported" || fail "sentinel not reported"
+
+# ---- T10: status.js on un-bootstrapped repo ----------------------------------
+echo
+echo "T10 — status.js on un-bootstrapped repo reports clearly"
+NEW="$(mktemp -d -t continuum-synth-empty.XXXXXX)"
+git -C "$NEW" init -q
+STATUS_EMPTY="$(node "$PLUGIN_DIR/lib/status.js" --project-dir "$NEW")"
+echo "$STATUS_EMPTY" | grep -q "Not bootstrapped" && ok "un-bootstrapped clearly reported" || fail "missing un-bootstrapped notice"
+rm -rf "$NEW"
+
+# ---- T11: token-budget enforcement drops oldest link, keeps STATE -----------
+echo
+echo "T11 — token budget drops oldest link summary, never STATE.md"
+# Make 5 huge fake links so they exceed the cap together with STATE.md
+for i in 3 4 5 6 7; do
+  PAD="$(printf 'lorem ipsum dolor sit amet, consectetur adipiscing elit %.0s' {1..500})"
+  mkdir -p "$REPO/.continuum/chain/links/000$i"
+  echo "$PAD" > "$REPO/.continuum/chain/links/000$i/summary.md"
+  echo "{\"id\":$i,\"ts\":\"2026-05-18T1$i:00:00Z\",\"commit\":null,\"summary_tokens\":700,\"tags\":[\"bulk\"]}" >> "$REPO/.continuum/chain/index.jsonl"
+done
+# Crank newest_links_to_load to force overflow
+cat > "$REPO/.continuum/config.json" <<'EOF'
+{ "newest_links_to_load": 5, "inject_token_cap": 1500 }
+EOF
+OUT6="$(run_hook hooks/session_start.js "{\"session_id\":\"s6\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$REPO\",\"hook_event_name\":\"SessionStart\",\"source\":\"resume\"}")"
+CTX6="$(echo "$OUT6" | extract_ctx)"
+echo "$CTX6" | grep -q "Decisions: MFA, Postgres 16" && ok "STATE.md preserved under budget" || fail "STATE.md was dropped (BUG)"
+echo "$CTX6" | grep -q "dropped to stay under token cap" && ok "drop-count reported" || fail "drop-count not reported"
+
+# ---- T12: malformed sentinel doesn't crash SessionStart ----------------------
+echo
+echo "T12 — malformed sentinel is tolerated"
+echo "this is not json" > "$REPO/.continuum/.pending-checkpoint"
+OUT7="$(run_hook hooks/session_start.js "{\"session_id\":\"s7\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$REPO\",\"hook_event_name\":\"SessionStart\",\"source\":\"resume\"}")"
+CTX7="$(echo "$OUT7" | extract_ctx)"
+[ -n "$CTX7" ] && ok "SessionStart still emits context with bad sentinel" || fail "crashed on bad sentinel"
+
+# ============================================================================
+# Phase 2 invariants: recall, dream/rollup, feedback queue
+# ============================================================================
+
+# Build a fresh repo with 6 links for Phase 2 tests, so the Phase 1 chain above
+# (heavily mutated, archived, etc) doesn't pollute these assertions.
+P2REPO="$(mktemp -d -t continuum-synth-p2.XXXXXX)"
+git -C "$P2REPO" init -q
+git -C "$P2REPO" commit -q --allow-empty -m init
+mkdir -p "$P2REPO/.continuum/chain/links" "$P2REPO/.continuum/archive/transcripts"
+touch "$P2REPO/.continuum/chain/index.jsonl"
+
+mklink () {
+  # mklink <tags-csv> <summary-text>
+  echo "$2" | node "$PLUGIN_DIR/lib/write_link.js" --project-dir "$P2REPO" --tags "$1" > /dev/null
+}
+mklink "bootstrap,auth"      "Initial baseline. Decided basic email/password login."
+mklink "auth,mfa,decision"   "Switched to MFA via TOTP. Supersedes basic-login from link 0001."
+mklink "db,postgres"         "Picked Postgres 16 with pgbouncer pooling."
+mklink "ui,button"           "Primary CTA button redesigned. indigo-600 fill."
+mklink "auth,rate-limit"     "Added auth rate-limit: 5 attempts/min/IP."
+mklink "perf"                "Switched JSON parser to simdjson, 3x faster on large bodies."
+
+# ---- T13: recall by keyword finds the right link ----------------------------
+echo
+echo "T13 — recall by keyword finds the right link"
+RECALL="$(node "$PLUGIN_DIR/lib/recall_cli.js" --project-dir "$P2REPO" --json -- mfa)"
+HITS=$(echo "$RECALL" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['hitCount'])")
+TOP=$(echo "$RECALL" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['hits'][0]['id'] if d['hits'] else 'none')")
+[ "$HITS" -ge 1 ] && [ "$TOP" = "2" ] && ok "recall 'mfa' → link 2 (hits=$HITS)" || fail "expected hit on link 2 got top=$TOP hits=$HITS"
+
+# ---- T14: recall --tags filter ---------------------------------------------
+echo
+echo "T14 — recall --tags restricts results"
+RECALL2="$(node "$PLUGIN_DIR/lib/recall_cli.js" --project-dir "$P2REPO" --json --tags db -- postgres)"
+HITS2=$(echo "$RECALL2" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['hitCount'])")
+TOP2=$(echo "$RECALL2" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['hits'][0]['id'] if d['hits'] else 'none')")
+[ "$HITS2" = "1" ] && [ "$TOP2" = "3" ] && ok "tag-filtered recall → link 3" || fail "expected 1 hit on link 3 got hits=$HITS2 top=$TOP2"
+
+# ---- T15: dream_prepare picks last N non-digest, non-archived ---------------
+echo
+echo "T15 — dream_prepare picks correct candidates"
+PREP="$(node "$PLUGIN_DIR/lib/dream_prepare.js" --project-dir "$P2REPO" --n 4)"
+IDS_JSON=$(echo "$PREP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(','.join(map(str,d['rollupCandidateIds'])))")
+CAN=$(echo "$PREP" | python3 -c "import json,sys; print(json.load(sys.stdin)['canProceed'])")
+[ "$IDS_JSON" = "3,4,5,6" ] && ok "candidates = 3,4,5,6 (n=4)" || fail "expected '3,4,5,6' got '$IDS_JSON'"
+[ "$CAN" = "True" ] && ok "canProceed=true" || fail "canProceed=$CAN"
+
+# ---- T16: dream_finalize writes digest + archives + tombstones --------------
+echo
+echo "T16 — dream_finalize writes digest + moves originals + writes tombstones"
+DIGEST_ID=$(echo "## Phase digest
+Consolidated: MFA via TOTP, Postgres 16, indigo CTA, 5/min rate-limit." | node "$PLUGIN_DIR/lib/dream_finalize.js" --project-dir "$P2REPO" --rollup-ids "3,4,5,6" --tags "phase-digest,bundle")
+[ "$DIGEST_ID" = "0007" ] && ok "digest id = 0007" || fail "expected 0007 got '$DIGEST_ID'"
+[ -d "$P2REPO/.continuum/chain/links/0007" ] && ok "digest dir present" || fail "digest dir missing"
+for n in 3 4 5 6; do
+  if [ -d "$P2REPO/.continuum/chain/links/_archived/000$n" ] && [ ! -d "$P2REPO/.continuum/chain/links/000$n" ]; then
+    ok "link $n moved to _archived/"
+  else
+    fail "link $n not properly archived"
+  fi
+done
+TOMB_COUNT=$(grep -c '"tombstone":true' "$P2REPO/.continuum/chain/index.jsonl")
+[ "$TOMB_COUNT" = "4" ] && ok "4 tombstone entries in index" || fail "expected 4 tombstones got $TOMB_COUNT"
+
+# ---- T17: recall still finds archived links (and marks them archived) ------
+# Link 3 (postgres) was rolled up in T16 — querying its tag should still hit,
+# and the hit must be flagged archived.
+echo
+echo "T17 — recall surfaces archived link with archived=True"
+RECALL3="$(node "$PLUGIN_DIR/lib/recall_cli.js" --project-dir "$P2REPO" --json -- postgres)"
+TOPID=$(echo "$RECALL3" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['hits'][0]['id'] if d['hits'] else 'none')")
+ARCHIVED=$(echo "$RECALL3" | python3 -c "import json,sys; d=json.load(sys.stdin); h=d['hits'][0] if d['hits'] else None; print(h['archived'] if h else 'no-hit')")
+[ "$TOPID" = "3" ] && [ "$ARCHIVED" = "True" ] && ok "archived link 3 surfaced with archived=True" || fail "expected hit on archived link 3 got id=$TOPID archived=$ARCHIVED"
+
+# ---- T18: session_start tail skips archived links ---------------------------
+echo
+echo "T18 — SessionStart tail shows only active links, not archived"
+echo "# State (post-dream)" > "$P2REPO/.continuum/STATE.md"
+OUT_P2="$(run_hook hooks/session_start.js "{\"session_id\":\"sp2\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$P2REPO\",\"hook_event_name\":\"SessionStart\",\"source\":\"resume\"}")"
+CTX_P2="$(echo "$OUT_P2" | extract_ctx)"
+echo "$CTX_P2" | grep -qF "Link 0007" && ok "digest (0007) appears in tail" || fail "digest missing from tail"
+echo "$CTX_P2" | grep -qF "Link 0003" && fail "archived link 3 appears in tail (BUG)" || ok "archived 0003 absent from tail"
+
+# ---- T19: MCP server initialize + tools/list + tools/call -------------------
+echo
+echo "T19 — MCP server handshake + tools/list + tools/call (recall)"
+MCP_OUT=$(printf '%s\n%s\n%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"recall\",\"arguments\":{\"query\":\"perf\",\"project_dir\":\"$P2REPO\"}}}" \
+  | node "$PLUGIN_DIR/mcp/server.js")
+INIT_OK=$(echo "$MCP_OUT" | python3 -c "
+import json,sys
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except: continue
+    if d.get('id')==1 and 'result' in d and d['result'].get('protocolVersion'): print('ok'); break
+" || true)
+[ "$INIT_OK" = "ok" ] && ok "initialize OK" || fail "initialize failed"
+TOOLS_OK=$(echo "$MCP_OUT" | python3 -c "
+import json,sys
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except: continue
+    if d.get('id')==2 and any(t['name']=='recall' for t in d['result']['tools']): print('ok'); break
+" || true)
+[ "$TOOLS_OK" = "ok" ] && ok "tools/list contains recall" || fail "tools/list missing recall"
+CALL_OK=$(echo "$MCP_OUT" | python3 -c "
+import json,sys
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try: d=json.loads(line)
+    except: continue
+    if d.get('id')==3 and d['result'].get('isError') is False and d['result'].get('structuredContent',{}).get('hitCount',0)>=1: print('ok'); break
+" || true)
+[ "$CALL_OK" = "ok" ] && ok "tools/call recall returned a hit" || fail "tools/call recall failed"
+
+# ---- T20: feedback file + dedup --------------------------------------------
+echo
+echo "T20 — feedback file + dedup by normalized title hash"
+FB_REPO="$(mktemp -d -t continuum-synth-fb.XXXXXX)"
+git -C "$FB_REPO" init -q
+R1=$(echo "Body of first" | node "$PLUGIN_DIR/lib/feedback_cli.js" file --project-dir "$FB_REPO" --title "Need /continuum:undo" --severity minor)
+STATUS1=$(echo "$R1" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+[ "$STATUS1" = "queued" ] && ok "first file → queued" || fail "first file → $STATUS1"
+R2=$(echo "Different body but same title" | node "$PLUGIN_DIR/lib/feedback_cli.js" file --project-dir "$FB_REPO" --title "  Need   /continuum:undo  " --severity major)
+STATUS2=$(echo "$R2" | python3 -c "import json,sys; print(json.load(sys.stdin)['status'])")
+[ "$STATUS2" = "duplicate-pending" ] && ok "whitespace-normalized title dedup'd" || fail "dedup failed: $STATUS2"
+
+# ---- T21: feedback flush --dry-run moves to sent/ ---------------------------
+echo
+echo "T21 — feedback flush --dry-run moves item to sent/, no gh call"
+FLUSH=$(node "$PLUGIN_DIR/lib/feedback_cli.js" flush --project-dir "$FB_REPO" --dry-run)
+FLUSHED_N=$(echo "$FLUSH" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['flushed']))")
+[ "$FLUSHED_N" = "1" ] && ok "1 item dry-flushed" || fail "expected 1 flushed got $FLUSHED_N"
+LIST=$(node "$PLUGIN_DIR/lib/feedback_cli.js" list --project-dir "$FB_REPO")
+PEND=$(echo "$LIST" | python3 -c "import json,sys; print(json.load(sys.stdin)['pendingCount'])")
+SENT=$(echo "$LIST" | python3 -c "import json,sys; print(json.load(sys.stdin)['sentCount'])")
+[ "$PEND" = "0" ] && [ "$SENT" = "1" ] && ok "post-flush: 0 pending, 1 sent" || fail "post-flush counts wrong: pending=$PEND sent=$SENT"
+
+rm -rf "$P2REPO" "$FB_REPO"
+
+# ============================================================================
+# Phase 3 invariants: PostToolUse frontend hook, verification log, recall
+# stemming, archive renderer
+# ============================================================================
+
+P3REPO="$(mktemp -d -t continuum-synth-p3.XXXXXX)"
+git -C "$P3REPO" init -q
+git -C "$P3REPO" commit -q --allow-empty -m init
+mkdir -p "$P3REPO/.continuum/chain/links" "$P3REPO/.continuum/archive/transcripts" "$P3REPO/src/components"
+touch "$P3REPO/.continuum/chain/index.jsonl"
+# Enable frontend verification for this test repo (default is off per PRD §6).
+echo '{"frontend_verify": true}' > "$P3REPO/.continuum/config.json"
+
+# ---- T22: glob matcher ------------------------------------------------------
+echo
+echo "T22 — glob matcher invariants"
+GLOB_OUT=$(node -e "
+import('$PLUGIN_DIR/lib/glob.js').then(({matchGlob}) => {
+  const cases = [
+    ['src/foo.tsx', 'src/**/*.{tsx,jsx,vue,svelte,css}', true],
+    ['src/a/b/c.css', 'src/**/*.{tsx,jsx,vue,svelte,css}', true],
+    ['src/foo.ts', 'src/**/*.{tsx,jsx,vue,svelte,css}', false],
+    ['lib/foo.tsx', 'src/**/*.{tsx,jsx,vue,svelte,css}', false],
+  ];
+  let bad = 0;
+  for (const [p, g, want] of cases) {
+    if (matchGlob(p, g) !== want) { console.log('GLOB FAIL', p, g); bad++; }
+  }
+  console.log(bad === 0 ? 'GLOB OK' : 'GLOB BAD ' + bad);
+});
+")
+echo "$GLOB_OUT" | grep -qF "GLOB OK" && ok "glob matcher covers 4 cases" || fail "glob matcher: $GLOB_OUT"
+
+# ---- T23: PostToolUse emits directive for .tsx edit ------------------------
+echo
+echo "T23 — PostToolUse emits directive for frontend edit"
+OUT_FE=$(echo "{\"session_id\":\"sp3\",\"cwd\":\"$P3REPO\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$P3REPO/src/components/Btn.tsx\"}}" \
+  | node "$PLUGIN_DIR/hooks/post_tool_use.js")
+CTX_FE=$(echo "$OUT_FE" | python3 -c "import json,sys; print(json.load(sys.stdin)['hookSpecificOutput']['additionalContext'])" 2>/dev/null || echo "")
+echo "$CTX_FE" | grep -q "src/components/Btn.tsx" && ok "directive mentions the edited file" || fail "directive missing file path"
+echo "$CTX_FE" | grep -qF "browser_emulate_viewport" && ok "directive references browser MCP" || fail "directive missing MCP guidance"
+echo "$CTX_FE" | grep -q "375\|768\|1280" && ok "directive lists viewport breakpoints" || fail "breakpoints missing"
+[ -f "$P3REPO/.continuum/.frontend-changes.jsonl" ] && ok "frontend-changes log appended" || fail "log not written"
+
+# ---- T24: PostToolUse silent for non-frontend file -------------------------
+echo
+echo "T24 — PostToolUse silent on non-frontend edit"
+mkdir -p "$P3REPO/server"
+OUT_BE=$(echo "{\"session_id\":\"sp3\",\"cwd\":\"$P3REPO\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$P3REPO/server/api.py\"}}" \
+  | node "$PLUGIN_DIR/hooks/post_tool_use.js")
+[ -z "$OUT_BE" ] && ok "no output for .py edit" || fail "unexpected output for .py: $OUT_BE"
+
+# ---- T25: verify_record + verify_status cycle ------------------------------
+echo
+echo "T25 — verify_record + verify_status report counts"
+node "$PLUGIN_DIR/lib/verify_record_cli.js" --project-dir "$P3REPO" --path "src/components/Btn.tsx" --viewport 375 --status pass > /dev/null
+node "$PLUGIN_DIR/lib/verify_record_cli.js" --project-dir "$P3REPO" --path "src/components/Btn.tsx" --viewport 1280 --status fail --notes "overflows" > /dev/null
+STAT=$(node "$PLUGIN_DIR/lib/verify_status_cli.js" --project-dir "$P3REPO")
+echo "$STAT" | grep -qF "FAILURES (1)" && ok "verify_status reports failure count" || fail "FAILURES section missing"
+echo "$STAT" | grep -q "overflows" && ok "failure note surfaced" || fail "failure note missing"
+
+# ---- T26: write_link clears the frontend-changes log ----------------------
+echo
+echo "T26 — /continuum:checkpoint (write_link) clears .frontend-changes.jsonl"
+echo "test link" | node "$PLUGIN_DIR/lib/write_link.js" --project-dir "$P3REPO" --tags "test" > /dev/null
+[ ! -f "$P3REPO/.continuum/.frontend-changes.jsonl" ] && ok "log cleared by write_link" || fail "log still present after checkpoint"
+
+# ---- T27: stemmed recall — singular query hits plural-tagged link --------
+echo
+echo "T27 — stemmed recall: singular query hits plural-tagged link"
+S3REPO="$(mktemp -d -t continuum-synth-stem.XXXXXX)"
+mkdir -p "$S3REPO/.continuum/chain/links/0001"
+echo '{"id":1,"ts":"2026-05-18T10:00:00Z","commit":null,"summary_tokens":40,"tags":["decisions"]}' > "$S3REPO/.continuum/chain/index.jsonl"
+echo "We decided on the auth approach." > "$S3REPO/.continuum/chain/links/0001/summary.md"
+echo '{}' > "$S3REPO/.continuum/chain/links/0001/refs.json"
+SR=$(node "$PLUGIN_DIR/lib/recall_cli.js" --project-dir "$S3REPO" --json -- decision)
+HITS27=$(echo "$SR" | python3 -c "import json,sys; print(json.load(sys.stdin)['hitCount'])")
+[ "$HITS27" = "1" ] && ok "query 'decision' hits link tagged 'decisions'" || fail "expected 1 hit got $HITS27"
+SR2=$(node "$PLUGIN_DIR/lib/recall_cli.js" --project-dir "$S3REPO" --json -- decided)
+HITS27b=$(echo "$SR2" | python3 -c "import json,sys; print(json.load(sys.stdin)['hitCount'])")
+[ "$HITS27b" = "1" ] && ok "query 'decided' also hits via summary stem" || fail "expected 1 hit got $HITS27b"
+rm -rf "$S3REPO"
+
+# ---- T28: render_archive prints summary -----------------------------------
+echo
+echo "T28 — render_archive decompresses + summarizes"
+cat > /tmp/_p3_tr.jsonl <<'EOF'
+{"role":"user","content":"hi"}
+{"role":"assistant","content":[{"type":"tool_use","name":"Read"}]}
+{"role":"user","content":[{"type":"tool_result","is_error":true,"content":"bad"}]}
+EOF
+gzip -c /tmp/_p3_tr.jsonl > "$P3REPO/.continuum/archive/transcripts/2026-05-18T11-00-00Z__test.jsonl.gz"
+rm /tmp/_p3_tr.jsonl
+ROUT=$(node "$PLUGIN_DIR/lib/render_archive.js" --project-dir "$P3REPO" --latest)
+echo "$ROUT" | grep -qF "Records:** 3" && ok "renderer counts records" || fail "renderer count missing"
+echo "$ROUT" | grep -qF "Read: 1" && ok "renderer counts tool calls" || fail "tool counts missing"
+echo "$ROUT" | grep -qF "Errors (1)" && ok "renderer surfaces errors" || fail "error count missing"
+
+rm -rf "$P3REPO"
+
+# ---- Summary -----------------------------------------------------------------
+echo
+echo "─────────────────────────────"
+echo "passed: $PASS"
+echo "failed: $FAIL"
+echo "─────────────────────────────"
+[ "$FAIL" -eq 0 ] && exit 0 || exit 1

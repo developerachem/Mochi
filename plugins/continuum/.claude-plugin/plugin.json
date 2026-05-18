@@ -1,0 +1,8 @@
+{
+  "name": "continuum",
+  "description": "Context chain memory for Claude Code: survives session boundaries, compaction, and device switches by maintaining an append-only chain of compressed link summaries plus a queryable archive of raw transcripts.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Jonayed Ahamed"
+  }
+}
