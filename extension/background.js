@@ -34,6 +34,47 @@ const tabOwner = new Map();
 // tabId → true (we hold a chrome.debugger attachment to this tab)
 const attachedTabs = new Set();
 
+// Diagnostic logger. Two sinks: SW DevTools console (for live tailing) and a
+// ring buffer in chrome.storage.local (survives SW restarts so we can see the
+// full attach/detach history even when MV3 unloads the worker between events).
+// Dump from the SW DevTools console with:
+//   copy(JSON.stringify((await chrome.storage.local.get("mochiDbgLog")).mochiDbgLog, null, 2))
+// or clear with:
+//   chrome.storage.local.remove("mochiDbgLog")
+const SW_BOOT_AT = Date.now();
+const DBG_BUFFER_MAX = 800;
+const dbgBuffer = [];
+let dbgPersistTimer = null;
+function dbgPersistSoon() {
+  if (dbgPersistTimer) return;
+  dbgPersistTimer = setTimeout(async () => {
+    dbgPersistTimer = null;
+    try { await chrome.storage.local.set({ mochiDbgLog: dbgBuffer }); } catch {}
+  }, 250);
+}
+function DBG(event, data) {
+  const ts = Date.now();
+  const t = new Date(ts).toISOString().slice(11, 23);
+  const sinceBoot = ((ts - SW_BOOT_AT) / 1000).toFixed(1) + "s";
+  try { console.log(`[mochi:dbg ${t} +${sinceBoot}] ${event}`, data ?? ""); }
+  catch {}
+  dbgBuffer.push({ ts, event, data: data ?? null });
+  if (dbgBuffer.length > DBG_BUFFER_MAX) {
+    dbgBuffer.splice(0, dbgBuffer.length - DBG_BUFFER_MAX);
+  }
+  dbgPersistSoon();
+}
+// Rehydrate any prior entries so we have history across SW restarts.
+chrome.storage.local.get("mochiDbgLog").then((o) => {
+  if (Array.isArray(o?.mochiDbgLog) && o.mochiDbgLog.length > 0) {
+    dbgBuffer.unshift(...o.mochiDbgLog);
+    if (dbgBuffer.length > DBG_BUFFER_MAX) {
+      dbgBuffer.splice(0, dbgBuffer.length - DBG_BUFFER_MAX);
+    }
+  }
+  DBG("sw.boot", { wsUrl: WS_URL, hydratedEntries: o?.mochiDbgLog?.length ?? 0 });
+}).catch(() => DBG("sw.boot", { wsUrl: WS_URL, hydratedEntries: 0 }));
+
 // Per-tab capture buffers. Created lazily on attach. Trimmed to MAX_* on insert
 // so service-worker memory stays bounded. Cleared on tab removal.
 //   console: [{ level, text, args, url, line, col, ts }]
@@ -243,7 +284,7 @@ async function describeDebuggerHolder(tabId) {
 }
 
 async function ensureAttached(tabId) {
-  if (attachedTabs.has(tabId)) return;
+  if (attachedTabs.has(tabId)) { DBG("attach.skip already-attached", { tabId }); return; }
   const tryAttach = () => chrome.debugger.attach({ tabId }, DEBUGGER_PROTOCOL_VERSION);
   const isTransient = (msg) =>
     msg.includes("Another debugger") ||
@@ -252,29 +293,75 @@ async function ensureAttached(tabId) {
     // chrome-extension:// or chrome:// target (e.g. some redirects pass
     // through such pages briefly). The condition usually resolves in <1s.
     msg.includes("Cannot access");
+  DBG("attach.try", { tabId });
   try {
     await tryAttach();
+    DBG("attach.ok", { tabId, attempt: 1 });
   } catch (e) {
     const msg = String(e?.message ?? e);
+    DBG("attach.fail.first", { tabId, msg, transient: isTransient(msg) });
     if (isTransient(msg)) {
       // Progressive backoff — handles both fast (DevTools mid-transition,
       // ~250ms) and slow (navigation through a non-debuggable URL, ~1s) cases.
       let attached = false;
+      let attempt = 1;
       for (const delay of [300, 1000]) {
+        attempt++;
         await new Promise((r) => setTimeout(r, delay));
-        try { await tryAttach(); attached = true; break; } catch {}
+        try {
+          await tryAttach();
+          attached = true;
+          DBG("attach.ok", { tabId, attempt, delayBeforeMs: delay });
+          break;
+        } catch (e2) {
+          DBG("attach.fail.retry", { tabId, attempt, delayBeforeMs: delay, msg: String(e2?.message ?? e2) });
+        }
       }
       if (!attached) {
+        // Enumerate ALL attached targets — Chrome only tells us "attached: bool",
+        // never which client. But listing every attached target (not just our
+        // tabId) often reveals a service worker or iframe target on the same
+        // origin that's the actual blocker.
+        let allAttached = [];
+        try {
+          const targets = await chrome.debugger.getTargets();
+          allAttached = targets.filter((t) => t.attached).map((t) => ({
+            type: t.type, tabId: t.tabId, url: t.url, extensionId: t.extensionId,
+          }));
+        } catch {}
         const holder = await describeDebuggerHolder(tabId);
         let urlHint = "";
         try {
           const tab = await chrome.tabs.get(tabId);
           if (tab?.url) urlHint = ` (current URL: ${tab.url})`;
         } catch {}
+        DBG("attach.fail.final", { tabId, holder, urlHint, allAttached, msg });
+        // Chrome's "Cannot access a chrome-extension:// URL of different
+        // extension" is structurally different from a debugger-lock conflict.
+        // It means another installed extension has injected a
+        // chrome-extension:// iframe/resource into this tab — Chrome blocks
+        // cross-extension DevTools access for security. No "holder" exists in
+        // this case; the misleading "holder" wording sent multiple debugging
+        // sessions down the wrong path.
+        const crossExtensionFrame =
+          msg.includes("Cannot access") &&
+          msg.includes("chrome-extension://") &&
+          msg.includes("different extension");
+        if (crossExtensionFrame) {
+          throw new Error(
+            `chrome.debugger attach blocked for tab ${tabId}${urlHint} — ` +
+            `another installed Chrome extension has injected a chrome-extension:// ` +
+            `frame into this page, and Chrome forbids cross-extension DevTools access. ` +
+            `Disable other extensions that inject overlays into this site (Grammarly, ` +
+            `Boomerang, Mixmax, password managers, etc.) and reload the tab. ` +
+            `To identify culprits, open page DevTools on this tab and run: ` +
+            `[...document.querySelectorAll('iframe,frame,embed')].map(e=>e.src).filter(s=>s.startsWith('chrome-extension://'))`
+          );
+        }
         throw new Error(
           `chrome.debugger attach failed for tab ${tabId}${urlHint} — ${holder} is debugging it ` +
           `or the page is at a non-debuggable URL. Close DevTools (Cmd+Opt+I), pause the ` +
-          `conflicting extension, or navigate away and retry.`
+          `conflicting extension, or navigate away and retry. (raw: ${msg})`
         );
       }
     } else {
@@ -292,10 +379,13 @@ async function ensureAttached(tabId) {
   getTabBuf(tabId);
 }
 
-async function detachIfAttached(tabId) {
+async function detachIfAttached(tabId, source = "unknown") {
   if (!attachedTabs.has(tabId)) return;
+  DBG("detach.self", { tabId, source });
   attachedTabs.delete(tabId);
-  try { await chrome.debugger.detach({ tabId }); } catch {}
+  try { await chrome.debugger.detach({ tabId }); } catch (e) {
+    DBG("detach.self.error", { tabId, source, msg: String(e?.message ?? e) });
+  }
 }
 
 async function detachSessionTabs(s) {
@@ -307,18 +397,26 @@ async function cdp(tabId, method, params = {}) {
   try {
     return await chrome.debugger.sendCommand({ tabId }, method, params);
   } catch (e) {
+    const msg = String(e?.message ?? e);
     // "Detached while handling command" fires when the page navigates
     // cross-process or DevTools opens mid-call. Re-attach once and retry.
-    if (String(e?.message ?? e).includes("Detached")) {
+    if (msg.includes("Detached")) {
+      DBG("cdp.detached-mid-cmd", { tabId, method, msg });
       attachedTabs.delete(tabId);
       await ensureAttached(tabId);
       return chrome.debugger.sendCommand({ tabId }, method, params);
     }
+    DBG("cdp.error", { tabId, method, msg });
     throw e;
   }
 }
 
-chrome.debugger.onDetach.addListener(({ tabId }) => {
+// Chrome calls this whenever a debugger session ends without our asking. The
+// `reason` field is the most useful clue: "target_closed" (tab/process died),
+// "canceled_by_user" (user clicked the "Cancel" banner button), or undefined
+// (SW shutdown / Chrome detached us internally).
+chrome.debugger.onDetach.addListener(({ tabId, extensionId }, reason) => {
+  DBG("debugger.onDetach", { tabId, extensionId, reason });
   if (tabId != null) attachedTabs.delete(tabId);
 });
 
@@ -633,9 +731,24 @@ function safeSend(obj) {
 
 chrome.alarms.create("super-tester-tick", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "super-tester-tick" && connectionEnabled) {
-    if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) connect();
+  if (alarm.name === "super-tester-tick") {
+    DBG("alarm.tick", {
+      connectionEnabled,
+      wsState: ws?.readyState ?? "null",
+      attachedTabs: [...attachedTabs],
+      sessions: sessions.size,
+    });
+    if (connectionEnabled) {
+      if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) connect();
+    }
   }
+});
+
+// Best-effort hook: fires shortly before Chrome unloads the service worker.
+// If you see this followed by "sw.boot" in the next log line, that's MV3 idle
+// timeout — the debugger attachment is released by Chrome on SW unload.
+chrome.runtime.onSuspend.addListener(() => {
+  DBG("sw.onSuspend", { attachedTabs: [...attachedTabs], sessions: sessions.size });
 });
 
 function boot() {
