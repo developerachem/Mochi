@@ -623,6 +623,13 @@
     return { message: text.trim(), pickedElements: elements };
   }
 
+  // Wait for the browser to actually paint the next two frames. Used to make
+  // sure the modal is gone from the rendered viewport before captureVisibleTab
+  // snapshots it — otherwise the screenshot includes our own UI.
+  function nextPaint() {
+    return new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+  }
+
   async function send() {
     const sessionId = select.value;
     const { message, pickedElements } = buildMessageAndPicks();
@@ -638,6 +645,23 @@
       screenshotIntent = { scope, rect };
     }
 
+    // If we're about to capture a screenshot, hide the modal + backdrop
+    // first so they don't appear in the snapshot. Reuses the same
+    // hidden-for-pick / .picker classes as the element picker.
+    let didHide = false;
+    if (screenshotIntent) {
+      setStatus("Capturing screenshot…");
+      modal.classList.add("hidden-for-pick");
+      backdrop.classList.add("picker");
+      didHide = true;
+      // Wait for the CSS opacity transition (120ms) to actually paint, plus
+      // one safety buffer. captureVisibleTab on macOS reads the latest
+      // compositor frame; without this delay it sometimes catches the modal
+      // mid-fade.
+      await nextPaint();
+      await new Promise((r) => setTimeout(r, 180));
+    }
+
     let res;
     try {
       res = await chrome.runtime.sendMessage({
@@ -650,10 +674,12 @@
         screenshotIntent,
       });
     } catch (e) {
+      if (didHide) { modal.classList.remove("hidden-for-pick"); backdrop.classList.remove("picker"); }
       setStatus(`Send failed: ${e?.message ?? e}`, "err");
       sendBtn.disabled = false;
       return;
     }
+    if (didHide) { modal.classList.remove("hidden-for-pick"); backdrop.classList.remove("picker"); }
     sendBtn.disabled = false;
     if (res?.ok) {
       setStatus("Delivered. Agent will see it on its next tool call.", "ok");
