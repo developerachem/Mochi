@@ -22,7 +22,7 @@ Use when, mid-task, you notice "this would have been easier if continuum could _
 Then pipe to:
 
 ```bash
-cat <<'CONTINUUM_FB_EOF' | node "$CLAUDE_PLUGIN_ROOT/lib/feedback_cli.js" file --title "$TITLE" --severity "$SEVERITY" --link-id "$LINK_ID"
+cat <<'CONTINUUM_FB_EOF' | node "${CLAUDE_SKILL_DIR}/../lib/feedback_cli.js" file --title "$TITLE" --severity "$SEVERITY" --link-id "$LINK_ID"
 <body markdown>
 CONTINUUM_FB_EOF
 ```
@@ -34,7 +34,7 @@ Output is JSON: `{status: "queued"|"duplicate-pending"|"duplicate-sent", hash, p
 Flush queued items into GitHub issues. By default rate-limited to 10 per 24h (configurable with `--cap`). Use `--dry-run` to preview without creating issues.
 
 ```bash
-node "$CLAUDE_PLUGIN_ROOT/lib/feedback_cli.js" flush ${ARGUMENTS}
+node "${CLAUDE_SKILL_DIR}/../lib/feedback_cli.js" flush ${ARGUMENTS}
 ```
 
 Show the resulting JSON to the user. If `gh` CLI is not installed, the user will need to install it (`brew install gh`) and run `gh auth login` before real flushes work.
@@ -44,7 +44,7 @@ Show the resulting JSON to the user. If `gh` CLI is not installed, the user will
 Show pending + sent counts.
 
 ```bash
-node "$CLAUDE_PLUGIN_ROOT/lib/feedback_cli.js" list
+node "${CLAUDE_SKILL_DIR}/../lib/feedback_cli.js" list
 ```
 
 ## When NOT to file feedback

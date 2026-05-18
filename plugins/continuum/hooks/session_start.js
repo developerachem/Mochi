@@ -134,11 +134,16 @@ async function main() {
   const projectDir = payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const sessionId = payload.session_id || null;
 
-  // Persist session id so other hooks/commands can correlate.
+  // Persist session id + plugin root path so other hooks/commands can correlate.
+  // .plugin-root is a fallback for slash command bodies in case
+  // ${CLAUDE_SKILL_DIR} doesn't resolve for flat command files.
   try {
     const p = paths(projectDir);
     fs.mkdirSync(p.root, { recursive: true });
     if (sessionId) fs.writeFileSync(p.sessionIdFile, sessionId);
+    if (process.env.CLAUDE_PLUGIN_ROOT) {
+      fs.writeFileSync(path.join(p.root, ".plugin-root"), process.env.CLAUDE_PLUGIN_ROOT);
+    }
   } catch {}
 
   // Register with the Mochi broker so the extension popup can target this

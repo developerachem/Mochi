@@ -7,7 +7,7 @@ argument-hint: <query words>
 Run the recall helper and show its output to the user verbatim:
 
 ```bash
-node "$CLAUDE_PLUGIN_ROOT/lib/recall_cli.js" -- $ARGUMENTS
+node "${CLAUDE_SKILL_DIR}/../lib/recall_cli.js" -- $ARGUMENTS
 ```
 
 After showing the output:

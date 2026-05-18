@@ -409,6 +409,15 @@ echo "$ROUT" | grep -qF "Errors (1)" && ok "renderer surfaces errors" || fail "e
 
 rm -rf "$P3REPO"
 
+# ---- T29: no command file uses the un-substituted $CLAUDE_PLUGIN_ROOT --------
+# Slash command bodies don't expand ${CLAUDE_PLUGIN_ROOT}; only ${CLAUDE_SKILL_DIR}
+# is substituted (per the skills docs). Regression guard.
+echo
+echo "T29 — no command file references the un-substituted \$CLAUDE_PLUGIN_ROOT"
+BAD=$(grep -l '\$CLAUDE_PLUGIN_ROOT' "$PLUGIN_DIR"/commands/*.md 2>/dev/null | wc -l | tr -d ' ')
+[ "$BAD" = "0" ] && ok "all command bodies use \${CLAUDE_SKILL_DIR} or .plugin-root" \
+  || fail "$BAD command file(s) still use \$CLAUDE_PLUGIN_ROOT — won't expand in slash command bash blocks"
+
 # ---- Summary -----------------------------------------------------------------
 echo
 echo "─────────────────────────────"
