@@ -7,9 +7,29 @@ allowed-tools: [Bash]
 
 # Browser
 
-Use the Mochi browser MCP tools for browser automation and QA. The MCP
-server is globally registered as `browser`, and its tool names start with
-`browser_`.
+Use the Mochi browser MCP tools for browser automation and QA.
+
+## Finding the tools
+
+When installed as a Claude Code plugin, the MCP server registers as
+`plugin:mochi:browser`. The actual tool names use **underscores** in the
+namespace prefix: `mcp__plugin_mochi_browser__browser_session_start`,
+`mcp__plugin_mochi_browser__browser_screenshot`, etc.
+
+If you don't see them in your current toolset, search via ToolSearch:
+`select:mcp__plugin_mochi_browser__browser_session_health` (and similar).
+Schemas are loaded on demand.
+
+When written without prefix below (e.g. "call `browser_navigate`"), the
+full callable name is `mcp__plugin_mochi_browser__browser_navigate`.
+
+## Conflict-with-extension note (HISTORICAL — no longer applies)
+
+Earlier versions of this plugin had a duplicate MCP-server registration
+that competed with the Mochi Chrome extension over `chrome.debugger`
+attachments. The unified plugin (v0.2+) eliminates this — there is no
+extension-vs-MCP conflict anymore. If your memory has an old "browser MCP
+conflicts with the Mochi extension" note from a prior session, it's stale.
 
 ## Default Behavior
 
