@@ -1,12 +1,21 @@
 {
-  "browser": {
-    "type": "stdio",
-    "command": "node",
-    "args": [
-      "/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/server/src/index.js"
-    ],
-    "env": {
-      "SUPER_TESTER_EXTENSION_PATH": "/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/extension"
+  "mcpServers": {
+    "browser": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/server/src/index.js"
+      ],
+      "env": {
+        "SUPER_TESTER_EXTENSION_PATH": "${CLAUDE_PLUGIN_ROOT}/extension"
+      }
+    },
+    "continuum": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/plugins/continuum/mcp/server.js"
+      ]
     }
   }
 }

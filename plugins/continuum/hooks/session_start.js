@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import {
   paths,
   isBootstrapped,
@@ -13,6 +14,12 @@ import {
 } from "../lib/paths.js";
 import { readSentinel } from "../lib/archive.js";
 import { register as brokerRegister } from "../lib/broker.js";
+
+// Resolve the directory that holds the continuum plugin's lib/ — works
+// regardless of whether continuum is bundled inside super-tester or loaded
+// standalone. .plugin-root receives this path so slash commands can
+// resolve helpers via `cat .continuum/.plugin-root` + a fixed relative tail.
+const CONTINUUM_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 async function readStdin() {
   return await new Promise((resolve) => {
@@ -134,16 +141,14 @@ async function main() {
   const projectDir = payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const sessionId = payload.session_id || null;
 
-  // Persist session id + plugin root path so other hooks/commands can correlate.
-  // .plugin-root is a fallback for slash command bodies in case
-  // ${CLAUDE_SKILL_DIR} doesn't resolve for flat command files.
+  // Persist session id + continuum's lib root so slash commands can resolve
+  // helpers without depending on ${CLAUDE_PLUGIN_ROOT} expansion in shell
+  // blocks (which doesn't work in skill bodies, see commit e988840).
   try {
     const p = paths(projectDir);
     fs.mkdirSync(p.root, { recursive: true });
     if (sessionId) fs.writeFileSync(p.sessionIdFile, sessionId);
-    if (process.env.CLAUDE_PLUGIN_ROOT) {
-      fs.writeFileSync(path.join(p.root, ".plugin-root"), process.env.CLAUDE_PLUGIN_ROOT);
-    }
+    fs.writeFileSync(path.join(p.root, ".plugin-root"), CONTINUUM_ROOT);
   } catch {}
 
   // Register with the Mochi broker so the extension popup can target this

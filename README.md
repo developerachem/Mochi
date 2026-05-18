@@ -50,51 +50,51 @@ Memory lives in **`<project-or-cwd>/.super-tester/memory.db`** by default
 (falls back to `~/.super-tester/memory.db` if no project root is detected).
 Override with `SUPER_TESTER_DB_PATH`.
 
-## Install
+## Install (one plugin, one extension, done)
 
-**One-step install:**
-
-```bash
-./install.sh
-```
-
-This script:
-
-1. Verifies Node ≥ 18 and locates Chrome
-2. Runs `npm install` in `server/`
-3. Asks before editing `~/.claude.json` (with timestamped backup), then wires the `browser` MCP entry pointing at this checkout
-4. Prints next steps
-
-Restart Claude Code. The first `browser_*` tool call auto-launches Chrome with
-the extension preloaded into a dedicated profile (your normal Chrome profile is
-untouched).
+This is a Claude Code **plugin** bundling everything: browser-automation MCP
+(`browser_*` tools), context-chain memory (Continuum), popup-driven hint
+messaging, hooks, and slash commands. Install the plugin and the Chrome
+extension — nothing else to wire up, no `.claude.json` editing.
 
 ```bash
-./install.sh --yes          # skip the confirmation prompt
-./install.sh --plugin-only  # don't edit ~/.claude.json (use plugin route below)
-./install.sh --uninstall    # remove from ~/.claude.json
+# 1. Install the plugin (one time, from this checkout):
+claude plugin install --scope user super-tester@super-tester
+
+# 2. Load the Chrome extension (one time):
+#    chrome://extensions → Developer mode → Load unpacked → select
+#    /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/extension
+
+# 3. Restart Claude Code.
 ```
 
-### Manual (no installer)
+That's it. The plugin auto-registers two MCP servers (`browser` for the
+automation tools, `continuum` for the recall tool) and seven slash commands
+(`/continuum:checkpoint`, `/continuum:recall`, `/continuum:status`,
+`/continuum:dream`, `/continuum:feedback`, `/continuum:rename`,
+`/continuum:render`).
 
-If you'd rather edit your config by hand, add to `~/.claude.json`:
+For the in-page hint modal: press **⌘⇧M** (macOS) or **Ctrl+Shift+M** on any
+page after the extension is loaded.
 
-```json
-{
-  "mcpServers": {
-    "browser": {
-      "command": "node",
-      "args": ["/absolute/path/to/Super-Tester/server/src/index.js"],
-      "env": {
-        "SUPER_TESTER_EXTENSION_PATH": "/absolute/path/to/Super-Tester/extension"
-      }
-    }
-  }
-}
+### Why this works without `~/.claude.json` edits
+
+Claude Code's plugin system supports declaring MCP servers inline. The plugin's
+`.mcp.json` registers `browser` (the Mochi automation MCP at
+`server/src/index.js`) and `continuum` (the recall MCP at
+`plugins/continuum/mcp/server.js`). All hooks and commands come from the
+plugin's manifest. Nothing reaches into your global Claude config.
+
+### Legacy installers (only needed if you don't want to use the plugin route)
+
+The `./install.sh` script editing `~/.claude.json` directly is still in the
+repo but is now redundant with the plugin install above. Use it only if you
+have a reason to avoid Claude's plugin system.
+
+```bash
+./install.sh           # ask before editing ~/.claude.json
+./install.sh --uninstall
 ```
-
-The `SUPER_TESTER_EXTENSION_PATH` is optional — if omitted, the server resolves
-the bundled `extension/` next to itself.
 
 ## Tools (MCP)
 

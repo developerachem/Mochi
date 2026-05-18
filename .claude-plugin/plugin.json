@@ -1,10 +1,20 @@
 {
   "name": "super-tester",
-  "description": "QA-tester MCP for AI assistants — Chrome browser automation with selector cache, workflow recording, self-healing replay. Each AI session lives in its own Chrome tab group; learned selectors and workflows persist in SQLite per project.",
-  "version": "0.1.0",
+  "description": "Mochi browser automation MCP + Continuum context-chain memory + popup-driven hint messaging. Pair with the Mochi Chrome extension for the popup UI + DOM picker.",
+  "version": "0.2.0",
   "author": {
     "name": "Super-Tester"
   },
   "homepage": "https://github.com/jonayed/super-tester",
-  "keywords": ["browser", "qa", "testing", "automation", "mcp", "chrome"]
+  "keywords": ["browser", "qa", "testing", "automation", "mcp", "chrome", "memory", "continuum"],
+  "commands": [
+    "./plugins/continuum/commands/checkpoint.md",
+    "./plugins/continuum/commands/dream.md",
+    "./plugins/continuum/commands/feedback.md",
+    "./plugins/continuum/commands/recall.md",
+    "./plugins/continuum/commands/rename.md",
+    "./plugins/continuum/commands/render.md",
+    "./plugins/continuum/commands/status.md"
+  ],
+  "hooks": "./plugins/continuum/hooks/hooks.json"
 }

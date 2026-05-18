@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/session_start.js\""
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/plugins/continuum/hooks/session_start.js\""
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/pre_compact.js\""
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/plugins/continuum/hooks/pre_compact.js\""
           }
         ]
       }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/session_end.js\""
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/plugins/continuum/hooks/session_end.js\""
           }
         ]
       }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/pre_tool_use.js\""
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/plugins/continuum/hooks/pre_tool_use.js\""
           }
         ]
       }
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/post_tool_use.js\""
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/plugins/continuum/hooks/post_tool_use.js\""
           }
         ]
       }
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/stop.js\""
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/plugins/continuum/hooks/stop.js\""
           }
         ]
       }
@@ -67,7 +67,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PLUGIN_ROOT/hooks/user_prompt_submit.js\""
+            "command": "node \"$CLAUDE_PLUGIN_ROOT/plugins/continuum/hooks/user_prompt_submit.js\""
           }
         ]
       }
