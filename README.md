@@ -2,9 +2,6 @@
 
 > Browser companion for AI assistants. Browser automation MCP + persistent
 > project memory + in-page hint messaging, all in one Claude Code plugin.
->
-> _Repo name is still `Super-Tester` (the original project name). The plugin
-> you install is **`mochi`**._
 
 A QA-tester MCP for AI assistants — with **memory**.
 
@@ -85,14 +82,14 @@ any tab to send a hint with picked elements + screenshot.
 ### Install from a local checkout (if hacking on the plugin itself)
 
 ```text
-/plugin marketplace add /absolute/path/to/your/Super-Tester/checkout
+/plugin marketplace add /absolute/path/to/your/Mochi/checkout
 /plugin install mochi@mochi
 ```
 
 If you change source files, rebuild the bundle before reloading:
 
 ```bash
-cd /path/to/Super-Tester/server && npm install && npm run build
+cd /path/to/Mochi/server && npm install && npm run build
 ```
 
 Then `/reload-plugins` inside Claude (or `/plugin uninstall mochi && /plugin install mochi@mochi` for a clean refresh).
