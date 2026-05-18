@@ -257,37 +257,8 @@
       <div id="claude-list">
         <div class="empty-state" id="claude-empty">No Claude sessions registered. Start one with the Continuum plugin.</div>
       </div>
-      <div id="claude-form" style="display:none;">
-        <select id="claude-target"></select>
-        <textarea id="claude-message" placeholder="Hint to push into the agent's next tool call…" maxlength="2000"></textarea>
-        <div class="toggles">
-          <div class="toggle-row">
-            <div class="label">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-              <span>Include URL</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="t-url" checked /><span class="track"><span class="thumb"></span></span></label>
-          </div>
-          <div class="toggle-row">
-            <div class="label">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-              <span>Include console errors</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="t-errors" checked /><span class="track"><span class="thumb"></span></span></label>
-          </div>
-          <div class="toggle-row">
-            <div class="label">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
-              <span>Include screenshot</span>
-            </div>
-            <label class="switch"><input type="checkbox" id="t-shot" /><span class="track"><span class="thumb"></span></span></label>
-          </div>
-        </div>
-        <button class="btn primary" id="claude-send-btn">
-          <span>Send hint</span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        </button>
-        <div class="status" id="claude-status"></div>
+      <div class="empty-state" id="claude-cta" style="display:none; padding-top: 8px;">
+        Press <span class="kbd">⌘⇧M</span> on any tab to send a hint.
       </div>
     </div>
 

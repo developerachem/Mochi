@@ -1,13 +1,11 @@
 #!/usr/bin/env node
-// PreToolUse: fires before EVERY tool call (built-in or MCP, with matcher "*").
-// Drains the Mochi popup-message inbox for this session and injects whatever
-// the user queued as a system reminder via hookSpecificOutput.additionalContext.
-// Claude reads it before deciding on its next tool — so the message lands
-// without interrupting the agent mid-thought.
+// UserPromptSubmit hook: fires when the user submits a new prompt. If the
+// popup-message inbox has anything queued (because the agent was idle when
+// the user sent a hint via the modal), drain it and inject as
+// additionalContext so the agent sees the hint TOGETHER with the user's
+// just-typed prompt — no separate prompt needed.
 //
-// Hot path: this runs on every tool call. Fast-skips via sentinel file
-// (.continuum/.inbox-flag, written by the broker on push, deleted on drain).
-// If no sentinel → exit 0 with no body (~1ms).
+// Same sentinel-fast-skip pattern as PreToolUse and Stop.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -28,13 +26,12 @@ async function readStdin() {
 function emit(text) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
-      hookEventName: "PreToolUse",
+      hookEventName: "UserPromptSubmit",
       additionalContext: text,
     },
   }));
   process.exit(0);
 }
-
 
 async function main() {
   let payload = {};
@@ -43,11 +40,9 @@ async function main() {
   const projectDir = payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   let sessionId = payload.session_id || null;
 
-  // Fast-skip: if no sentinel, no message — exit ~immediately.
   const sentinel = path.join(projectDir, ".continuum", ".inbox-flag");
   if (!fs.existsSync(sentinel)) { process.exit(0); return; }
 
-  // Recover sessionId from the file SessionStart writes, if not in stdin.
   if (!sessionId) {
     try {
       const p = paths(projectDir);
@@ -58,9 +53,6 @@ async function main() {
 
   const { messages } = await drainInbox({ sessionId });
   if (!messages || !messages.length) {
-    // Self-clean the sentinel if the broker didn't (e.g. session not
-    // registered on the broker side — orphan flag from a prior run). Without
-    // this, every tool call would re-hit HTTP for nothing.
     try { fs.unlinkSync(sentinel); } catch {}
     process.exit(0); return;
   }
@@ -69,6 +61,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  process.stderr.write(`[continuum:pre_tool_use] ${err?.message ?? err}\n`);
+  process.stderr.write(`[continuum:user_prompt_submit] ${err?.message ?? err}\n`);
   process.exit(0);
 });

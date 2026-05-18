@@ -283,6 +283,81 @@ console.log("T6.7 — screenshot context is saved to disk + referenced in hook o
   });
 }
 
+// ---- T8: Stop hook blocks with hint as reason ------------------------------
+console.log("T8 — Stop hook drains inbox and emits {decision:block, reason}");
+{
+  await fetchJson("/claude/register", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID, name: "stop-test", projectDir: REPO }),
+  });
+  await sleep(20);
+  await fetchJson("/claude/inbox", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: SESSION_ID,
+      message: "please address this before stopping",
+    }),
+  });
+  await sleep(30);
+  const r = await runHook("stop.js", {
+    session_id: SESSION_ID, cwd: REPO, hook_event_name: "Stop",
+  });
+  if (r.status !== 0 || !r.stdout) { bad(`hook failed: ${r.stderr}`); }
+  else {
+    let parsed; try { parsed = JSON.parse(r.stdout); } catch { bad("bad JSON output"); parsed = null; }
+    if (parsed) {
+      parsed.decision === "block" ? ok("emits decision:block") : bad(`decision=${parsed.decision}`);
+      String(parsed.reason || "").includes("please address this")
+        ? ok("reason contains hint text") : bad("reason missing hint");
+      String(parsed.reason || "").includes("**Mochi**")
+        ? ok("reason uses Mochi formatter") : bad("Mochi header missing in reason");
+    }
+  }
+  // Stop hook with empty inbox should NOT block
+  const r2 = await runHook("stop.js", {
+    session_id: SESSION_ID, cwd: REPO, hook_event_name: "Stop",
+  });
+  r2.stdout.trim() === "" ? ok("empty inbox → no block") : bad(`unexpected stop output: ${r2.stdout}`);
+  await fetchJson("/claude/unregister", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID }),
+  });
+}
+
+// ---- T9: UserPromptSubmit drains + injects additionalContext --------------
+console.log("T9 — UserPromptSubmit hook drains queued hints");
+{
+  await fetchJson("/claude/register", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID, name: "ups-test", projectDir: REPO }),
+  });
+  await sleep(20);
+  await fetchJson("/claude/inbox", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: SESSION_ID,
+      message: "queued while idle",
+    }),
+  });
+  await sleep(30);
+  const r = await runHook("user_prompt_submit.js", {
+    session_id: SESSION_ID, cwd: REPO, hook_event_name: "UserPromptSubmit",
+    prompt: "ok what's next",
+  });
+  if (r.status !== 0 || !r.stdout) { bad(`hook failed: ${r.stderr}`); }
+  else {
+    const parsed = JSON.parse(r.stdout);
+    parsed.hookSpecificOutput?.hookEventName === "UserPromptSubmit"
+      ? ok("hookEventName = UserPromptSubmit") : bad("wrong hookEventName");
+    const ctx = parsed.hookSpecificOutput?.additionalContext || "";
+    ctx.includes("queued while idle") ? ok("hint merged into prompt context") : bad("hint missing");
+  }
+  await fetchJson("/claude/unregister", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID }),
+  });
+}
+
 // ---- T7: Hook silently no-ops if broker is offline -------------------------
 console.log("T7 — hooks survive when broker offline (use bogus URL)");
 {

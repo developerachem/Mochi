@@ -55,7 +55,9 @@ document.getElementById("end-session-btn").addEventListener("click", async () =>
 refresh();
 setInterval(refresh, 1500);
 
-// ---------- Claude Sessions section ----------
+// ---------- Claude Sessions (read-only status) ----------
+// Send-hint UI lives only in the in-page modal (⌘⇧M). Popup just shows
+// the list so you can verify your session is registered + see queued hints.
 async function refreshClaudeSessions() {
   let res;
   try {
@@ -64,20 +66,18 @@ async function refreshClaudeSessions() {
   const sessions = (res && Array.isArray(res.sessions)) ? res.sessions : [];
 
   const empty = document.getElementById("claude-empty");
+  const cta = document.getElementById("claude-cta");
   const list = document.getElementById("claude-list");
-  const form = document.getElementById("claude-form");
-  const target = document.getElementById("claude-target");
 
   for (const el of list.querySelectorAll(".session-row")) el.remove();
 
   if (sessions.length === 0) {
     empty.style.display = "block";
-    form.style.display = "none";
-    target.innerHTML = "";
+    cta.style.display = "none";
     return;
   }
   empty.style.display = "none";
-  form.style.display = "flex";
+  cta.style.display = "block";
 
   for (const s of sessions) {
     const row = document.createElement("div");
@@ -93,55 +93,7 @@ async function refreshClaudeSessions() {
     row.appendChild(badge);
     list.insertBefore(row, empty);
   }
-
-  const prev = target.value;
-  target.innerHTML = "";
-  for (const s of sessions) {
-    const opt = document.createElement("option");
-    opt.value = s.sessionId;
-    opt.textContent = s.name || s.sessionId;
-    target.appendChild(opt);
-  }
-  if (sessions.some((s) => s.sessionId === prev)) target.value = prev;
 }
-
-document.getElementById("claude-send-btn").addEventListener("click", async () => {
-  const sessionId = document.getElementById("claude-target").value;
-  const message = document.getElementById("claude-message").value;
-  const includeUrl = document.getElementById("t-url").checked;
-  const includeConsoleErrors = document.getElementById("t-errors").checked;
-  const includeShot = document.getElementById("t-shot").checked;
-  const status = document.getElementById("claude-status");
-
-  if (!sessionId) { status.className = "status err"; status.textContent = "No session selected."; return; }
-  if (!message.trim()) { status.className = "status err"; status.textContent = "Type something first."; return; }
-
-  status.className = "status"; status.textContent = "Sending…";
-  let res;
-  try {
-    // Popup has no element picker, so screenshot scope is always the
-    // visible viewport. Background determines tab dpr from chrome.tabs.
-    const screenshotIntent = includeShot ? { scope: "viewport", rect: null } : null;
-    res = await chrome.runtime.sendMessage({
-      type: "popup_send_claude_message",
-      sessionId, message: message.trim(),
-      includeUrl, includeConsoleErrors,
-      screenshotIntent,
-    });
-  } catch (e) {
-    status.className = "status err"; status.textContent = String(e?.message ?? e); return;
-  }
-  if (res?.ok) {
-    document.getElementById("claude-message").value = "";
-    status.className = "status ok";
-    status.textContent = "Delivered. Agent will see it on its next tool call.";
-    refreshClaudeSessions();
-    setTimeout(() => { status.textContent = ""; status.className = "status"; }, 3000);
-  } else {
-    status.className = "status err";
-    status.textContent = res?.error || "Send failed.";
-  }
-});
 
 refreshClaudeSessions();
 setInterval(refreshClaudeSessions, 1500);

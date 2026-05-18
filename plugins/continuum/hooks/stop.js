@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// PreToolUse: fires before EVERY tool call (built-in or MCP, with matcher "*").
-// Drains the Mochi popup-message inbox for this session and injects whatever
-// the user queued as a system reminder via hookSpecificOutput.additionalContext.
-// Claude reads it before deciding on its next tool — so the message lands
-// without interrupting the agent mid-thought.
+// Stop hook: fires when the agent is about to stop a turn (i.e. just
+// finished its response, about to yield to the user). If the popup-message
+// inbox has pending hints at this moment, we BLOCK the stop with the hint
+// as the reason — the agent will continue this turn and address the hint
+// instead of forcing the user to type a follow-up prompt.
 //
-// Hot path: this runs on every tool call. Fast-skips via sentinel file
-// (.continuum/.inbox-flag, written by the broker on push, deleted on drain).
-// If no sentinel → exit 0 with no body (~1ms).
+// This catches the "user sent hint right as the agent finished" case so the
+// hint lands in the same turn rather than queuing for the next one.
+//
+// Same sentinel-fast-skip optimisation as PreToolUse: typical idle cost
+// ~1ms, only hits HTTP when there's actually something to drain.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -25,17 +27,6 @@ async function readStdin() {
   });
 }
 
-function emit(text) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      additionalContext: text,
-    },
-  }));
-  process.exit(0);
-}
-
-
 async function main() {
   let payload = {};
   try { payload = JSON.parse((await readStdin()) || "{}"); } catch {}
@@ -43,11 +34,9 @@ async function main() {
   const projectDir = payload.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
   let sessionId = payload.session_id || null;
 
-  // Fast-skip: if no sentinel, no message — exit ~immediately.
   const sentinel = path.join(projectDir, ".continuum", ".inbox-flag");
   if (!fs.existsSync(sentinel)) { process.exit(0); return; }
 
-  // Recover sessionId from the file SessionStart writes, if not in stdin.
   if (!sessionId) {
     try {
       const p = paths(projectDir);
@@ -58,17 +47,20 @@ async function main() {
 
   const { messages } = await drainInbox({ sessionId });
   if (!messages || !messages.length) {
-    // Self-clean the sentinel if the broker didn't (e.g. session not
-    // registered on the broker side — orphan flag from a prior run). Without
-    // this, every tool call would re-hit HTTP for nothing.
     try { fs.unlinkSync(sentinel); } catch {}
     process.exit(0); return;
   }
 
-  emit(formatHints(messages, projectDir, sessionId));
+  // Block the stop. `reason` becomes the message the agent reads on its
+  // continued turn. Same formatter as PreToolUse for consistency.
+  process.stdout.write(JSON.stringify({
+    decision: "block",
+    reason: formatHints(messages, projectDir, sessionId),
+  }));
+  process.exit(0);
 }
 
 main().catch((err) => {
-  process.stderr.write(`[continuum:pre_tool_use] ${err?.message ?? err}\n`);
+  process.stderr.write(`[continuum:stop] ${err?.message ?? err}\n`);
   process.exit(0);
 });
