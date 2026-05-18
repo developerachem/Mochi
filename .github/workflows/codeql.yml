@@ -1,0 +1,42 @@
+name: CodeQL
+
+# Static analysis for JavaScript across the extension, server, and Continuum
+# plugin. Free for public repositories. Findings appear under the Security tab.
+
+on:
+  push:
+    branches: [Master, master, main]
+  pull_request:
+    branches: [Master, master, main]
+  schedule:
+    # Weekly run catches new CVEs in unchanged code.
+    - cron: "37 7 * * 1"
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze JavaScript
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["javascript-typescript"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # Don't scan the generated bundle — it's vendored output from src/,
+          # not hand-written code.
+          paths-ignore: |
+            server/dist
+            **/node_modules
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

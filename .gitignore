@@ -6,3 +6,19 @@ server/.DS_Store
 server/.super-tester/
 exports/
 mcp/
+
+# Local env / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Test coverage
+coverage/
