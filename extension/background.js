@@ -652,12 +652,20 @@ boot();
 
 // ---------------- protocol dispatch ----------------
 
+// Updated whenever the broker pushes its claude_sessions_update broadcast.
+// Read by the popup via the popup_get_claude_sessions IPC.
+let claudeSessionsCache = [];
+
 async function handleMessage(raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch { return; }
   // Broker-initiated lifecycle messages have no id and don't go through dispatch.
   if (msg.type === "standby") { enterStandby(msg.reason); return; }
   if (msg.type === "promoted") { enterActive(); return; }
+  if (msg.type === "claude_sessions_update") {
+    claudeSessionsCache = Array.isArray(msg.sessions) ? msg.sessions : [];
+    return;
+  }
   const { id, type, params, clientId } = msg;
   if (id == null) return;
   try {
@@ -1998,6 +2006,36 @@ function waitForLoad(tabId) {
 
 // ---------------- popup messages ----------------
 
+// Snapshot of the currently-focused tab the user is looking at. Used by the
+// popup when "include browser context" is checked on a send-hint action.
+async function gatherBrowserContext() {
+  let tab = null;
+  try {
+    const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    tab = t || null;
+  } catch {}
+  if (!tab) return null;
+  const ctx = {
+    url: tab.url || null,
+    title: tab.title || null,
+    tabId: tab.id ?? null,
+    viewport: (tab.width && tab.height) ? `${tab.width}x${tab.height}` : null,
+  };
+  const buf = tabBuffers.get(tab.id);
+  if (buf && Array.isArray(buf.console)) {
+    const errors = [];
+    for (let i = buf.console.length - 1; i >= 0 && errors.length < 5; i--) {
+      const c = buf.console[i];
+      if (c.level === "error" || c.level === "warning" || c.source === "exception") {
+        const loc = c.url ? ` @ ${c.url}${c.line ? `:${c.line}` : ""}` : "";
+        errors.push(`[${c.level}] ${c.text}${loc}`);
+      }
+    }
+    if (errors.length) ctx.recentErrors = errors.reverse();
+  }
+  return ctx;
+}
+
 chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
   (async () => {
     try {
@@ -2031,6 +2069,37 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
           try { await sessionEnd({ closeTabs: false }, cid); } catch {}
         }
         sendResponse({ ended: ids.length });
+      } else if (req?.type === "popup_get_claude_sessions") {
+        sendResponse({ sessions: claudeSessionsCache });
+      } else if (req?.type === "popup_send_claude_message") {
+        const sessionId = req.sessionId;
+        const message = String(req.message ?? "").trim();
+        const includeContext = !!req.includeContext;
+        if (!sessionId || !message) {
+          sendResponse({ ok: false, error: "sessionId and message required" });
+          return;
+        }
+        let context = null;
+        if (includeContext) {
+          try { context = await gatherBrowserContext(); } catch {}
+        }
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          sendResponse({ ok: false, error: "broker not connected" });
+          return;
+        }
+        // Send via WS; broker enqueues into the claudeInbox for this session.
+        // We don't await an ack — broker responds asynchronously and the popup
+        // re-polls sessions to confirm the queuedCount bumped.
+        try {
+          ws.send(JSON.stringify({
+            id: `popup-${Date.now()}`,
+            type: "send_claude_message",
+            sessionId, message, context,
+          }));
+          sendResponse({ ok: true });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e?.message ?? e) });
+        }
       } else {
         sendResponse({ error: "unknown popup message" });
       }
