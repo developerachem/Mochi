@@ -1,4 +1,10 @@
-# Super-Tester
+# Mochi
+
+> Browser companion for AI assistants. Browser automation MCP + persistent
+> project memory + in-page hint messaging, all in one Claude Code plugin.
+>
+> _Repo name is still `Super-Tester` (the original project name). The plugin
+> you install is **`mochi`**._
 
 A QA-tester MCP for AI assistants — with **memory**.
 
@@ -52,48 +58,73 @@ Override with `SUPER_TESTER_DB_PATH`.
 
 ## Install (one plugin, one extension, done)
 
-This is a Claude Code **plugin** bundling everything: browser-automation MCP
-(`browser_*` tools), context-chain memory (Continuum), popup-driven hint
-messaging, hooks, and slash commands. Install the plugin and the Chrome
-extension — nothing else to wire up, no `.claude.json` editing.
+This is a Claude Code **plugin** named **mochi** that bundles everything:
+browser-automation MCP (`browser_*` tools), context-chain memory (Continuum),
+popup-driven hint messaging, hooks, and slash commands. Install the plugin and
+the Chrome extension — nothing else to wire up.
+
+### One-time install
 
 ```bash
-# 1. Install the plugin (one time, from this checkout):
-claude plugin install --scope user super-tester@super-tester
+# 1. Register this checkout as a local marketplace (one line in your
+#    Claude Code session — replace with your actual path):
+/plugin marketplace add /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester
 
-# 2. Load the Chrome extension (one time):
+# 2. Install the plugin from that marketplace:
+/plugin install mochi@mochi
+
+# 3. Load the Chrome extension:
 #    chrome://extensions → Developer mode → Load unpacked → select
 #    /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/extension
 
-# 3. Restart Claude Code.
+# 4. Restart Claude Code.
 ```
 
-That's it. The plugin auto-registers two MCP servers (`browser` for the
-automation tools, `continuum` for the recall tool) and seven slash commands
-(`/continuum:checkpoint`, `/continuum:recall`, `/continuum:status`,
-`/continuum:dream`, `/continuum:feedback`, `/continuum:rename`,
-`/continuum:render`).
+The plugin auto-registers:
+- Two MCP servers — `browser` (automation tools) and `continuum` (recall tool)
+- Seven slash commands — `/continuum:checkpoint`, `/continuum:recall`,
+  `/continuum:status`, `/continuum:dream`, `/continuum:feedback`,
+  `/continuum:rename`, `/continuum:render`
+- Seven hooks — SessionStart, PreCompact, SessionEnd, PreToolUse,
+  PostToolUse, Stop, UserPromptSubmit
+- The `/browser` skill
 
 For the in-page hint modal: press **⌘⇧M** (macOS) or **Ctrl+Shift+M** on any
-page after the extension is loaded.
+page once the extension is loaded.
 
-### Why this works without `~/.claude.json` edits
+### Migrating from the older `super-tester` plugin name
 
-Claude Code's plugin system supports declaring MCP servers inline. The plugin's
-`.mcp.json` registers `browser` (the Mochi automation MCP at
-`server/src/index.js`) and `continuum` (the recall MCP at
-`plugins/continuum/mcp/server.js`). All hooks and commands come from the
-plugin's manifest. Nothing reaches into your global Claude config.
+If you had an earlier install when the plugin was called `super-tester`, run:
 
-### Legacy installers (only needed if you don't want to use the plugin route)
+```
+/plugin uninstall super-tester
+/plugin marketplace remove super-tester
+```
 
-The `./install.sh` script editing `~/.claude.json` directly is still in the
-repo but is now redundant with the plugin install above. Use it only if you
-have a reason to avoid Claude's plugin system.
+…then follow the install steps above using the new `mochi` names. Your
+`.continuum/` chain data, screenshots, and feedback queue are tied to your
+project dir (not the plugin name) — they survive the rename.
+
+### Updating
+
+Whenever new versions of mochi land (bumped `version` in `plugin.json`):
+
+```
+/plugin update mochi
+```
+
+Claude Code re-copies the source files into its plugin cache and switches the
+active install over. MCP servers respawn on next Claude restart. For hook /
+command / skill changes only, `/reload-plugins` works mid-session.
+
+### Legacy install script
+
+The older `./install.sh` script (which edited `~/.claude.json` directly) is
+still in the repo but is now redundant with the plugin route. Don't use both
+at the same time — pick one.
 
 ```bash
-./install.sh           # ask before editing ~/.claude.json
-./install.sh --uninstall
+./install.sh --uninstall   # remove the legacy .claude.json entry if present
 ```
 
 ## Tools (MCP)
@@ -315,16 +346,11 @@ The selector cache and workflow store are shared across sessions
 (per-origin in SQLite), so a workflow recorded in Session A can be replayed
 from Session B without re-learning anything.
 
-## Claude Code global shortcut
+## Claude Code shortcuts
 
-This checkout can be installed as a Claude Code plugin and as a user-global MCP
-server named `browser`.
-
-```bash
-claude mcp add-json --scope user browser '{"type":"stdio","command":"node","args":["/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/server/src/index.js"],"env":{"SUPER_TESTER_EXTENSION_PATH":"/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/extension"}}'
-claude plugin marketplace add --scope user /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester
-claude plugin install --scope user super-tester@super-tester
-```
+After installing the `mochi` plugin (see [Install](#install-one-plugin-one-extension-done)
+above), the `browser` MCP server runs automatically. No `claude mcp add-json`
+needed.
 
 After restarting Claude Code, use:
 
@@ -376,7 +402,7 @@ its own tab group.
 ## Caveats
 
 - **Chromium-only** (Tab Groups API). Won't work in Firefox.
-- **Debugger banner:** the first time you call `browser_click` / `browser_type` / `browser_press_key` / `browser_screenshot` with `fullPage` or `elementRef` on a tab, Chrome shows a *"Super-Tester started debugging this browser"* banner. The session keeps the attachment alive until `browser_session_end` (or the tab closes). This is intentional and unavoidable for real input dispatch.
+- **Debugger banner:** the first time you call `browser_click` / `browser_type` / `browser_press_key` / `browser_screenshot` with `fullPage` or `elementRef` on a tab, Chrome shows a *"Mochi started debugging this browser"* banner (Chrome shows the extension's display name). The session keeps the attachment alive until `browser_session_end` (or the tab closes). This is intentional and unavoidable for real input dispatch.
 - **DevTools collision:** if you open Chrome DevTools on a session tab, CDP attach will fail until you close DevTools.
 - **`--load-extension`** requires Developer Mode in the target profile.
 - **WebSocket reconnect** from an MV3 service worker is best-effort: a 30-second alarm pings every cycle; opening the popup wakes the SW immediately.
@@ -386,7 +412,7 @@ its own tab group.
 
 | Symptom                                                    | Likely cause / fix                                                                                                                          |
 | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `extension didn't connect within timeout`                  | Extension isn't loaded, Chrome on a different profile, or the SW died. Click the Super-Tester icon → confirm "ON" badge.                    |
+| `extension didn't connect within timeout`                  | Extension isn't loaded, Chrome on a different profile, or the SW died. Click the Mochi icon → confirm the status dot is green.              |
 | `tab not in session group`                                 | The tab was dragged out, or the session was ended/cleared. Call `browser_session_start` again.                                              |
 | `element not found: …`                                     | Use `browser_snapshot` first; pass the `ref` it returns.                                                                                    |
 | `chrome.debugger attach failed — another debugger…`        | Close Chrome DevTools on the session tab (or other debugging extensions), then retry.                                                       |

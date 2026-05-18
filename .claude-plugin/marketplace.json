@@ -1,20 +1,23 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "super-tester",
-  "description": "Local Super-Tester browser automation plugin and MCP server.",
+  "name": "mochi",
+  "description": "Mochi — a browser companion for AI assistants. Bundled browser automation, persistent project memory, and human-in-the-loop hint messaging.",
   "owner": {
-    "name": "Super-Tester"
+    "name": "Jonayed Ahamed",
+    "email": "dev.jonayed@gmail.com"
   },
   "plugins": [
     {
-      "name": "super-tester",
-      "description": "Chrome browser automation MCP with tab-group isolated sessions, screenshots, console and network inspection, workflow memory, and a /browser shortcut.",
+      "name": "mochi",
+      "description": "Browser automation MCP + Continuum context-chain memory + in-page hint modal. Pair with the Mochi Chrome extension (⌘⇧M on any tab).",
       "author": {
-        "name": "Super-Tester"
+        "name": "Jonayed Ahamed",
+        "email": "dev.jonayed@gmail.com"
       },
       "category": "development",
+      "tags": ["browser", "automation", "memory", "qa", "chrome", "mcp"],
       "source": "./",
-      "homepage": "https://github.com/jonayed/super-tester"
+      "homepage": "https://github.com/DevZonayed/Super-Tester"
     }
   ]
 }

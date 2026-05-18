@@ -90,7 +90,7 @@ Then in any project:
 
 When the Mochi broker is running (the bundled `server/`), Continuum registers every Claude session with it. From the Mochi extension popup you can:
 
-1. See a list of running Claude sessions (with names like `super-tester · master`).
+1. See a list of running Claude sessions (with names like `mochi · master`).
 2. Send a hint into any session's inbox — optionally bundled with the current tab's URL + recent console errors.
 3. The hint arrives as a system reminder before the agent's **next tool call** (any tool: built-in `Read`/`Bash`/`Edit` or any MCP) — non-interrupting, zero-token-cost when idle.
 

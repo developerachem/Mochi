@@ -1,12 +1,13 @@
 {
-  "name": "super-tester",
-  "description": "Mochi browser automation MCP + Continuum context-chain memory + popup-driven hint messaging. Pair with the Mochi Chrome extension for the popup UI + DOM picker.",
-  "version": "0.2.0",
+  "name": "mochi",
+  "description": "A browser companion for AI assistants. Bundled MCP tools for Chrome automation, persistent project memory (Continuum chain), and an in-page hint modal — pair with the Mochi Chrome extension.",
+  "version": "0.3.0",
   "author": {
-    "name": "Super-Tester"
+    "name": "Jonayed Ahamed",
+    "email": "dev.jonayed@gmail.com"
   },
-  "homepage": "https://github.com/jonayed/super-tester",
-  "keywords": ["browser", "qa", "testing", "automation", "mcp", "chrome", "memory", "continuum"],
+  "homepage": "https://github.com/DevZonayed/Super-Tester",
+  "keywords": ["browser", "automation", "qa", "testing", "memory", "continuum", "mcp", "chrome"],
   "commands": [
     "./plugins/continuum/commands/checkpoint.md",
     "./plugins/continuum/commands/dream.md",
