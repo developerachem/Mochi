@@ -1,13 +1,13 @@
 ---
 name: browser
-description: "Use this skill when the user says browser, /browser, test in Chrome, inspect a webpage, verify a localhost app, capture screenshots, check console/network errors, run browser QA, or automate browser flows with Super-Tester MCP."
+description: "Use this skill when the user says browser, /browser, test in Chrome, inspect a webpage, verify a localhost app, capture screenshots, check console/network errors, run browser QA, or automate browser flows with the Mochi browser MCP."
 argument-hint: "[task or URL]"
 allowed-tools: [Bash]
 ---
 
 # Browser
 
-Use the Super-Tester MCP browser tools for browser automation and QA. The MCP
+Use the Mochi browser MCP tools for browser automation and QA. The MCP
 server is globally registered as `browser`, and its tool names start with
 `browser_`.
 
@@ -71,4 +71,4 @@ Chrome is already open or the extension is not connected, open
 
 `/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/extension`
 
-Then make sure the Super-Tester toolbar popup says connected.
+Then make sure the Mochi toolbar popup says connected.
