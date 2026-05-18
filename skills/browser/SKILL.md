@@ -87,8 +87,12 @@ conflicts with the Mochi extension" note from a prior session, it's stale.
 
 The server auto-launches Chrome with the bundled extension when possible. If
 Chrome is already open or the extension is not connected, open
-`chrome://extensions`, enable Developer mode, click "Load unpacked", and select:
+`chrome://extensions`, enable Developer mode, click "Load unpacked", and select
+the `extension/` folder inside the installed plugin:
 
-`/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/extension`
+`~/.claude/plugins/cache/mochi/mochi/<version>/extension`
+
+(`<version>` is the installed plugin version, e.g. `0.3.0` — find it under
+`~/.claude/plugins/cache/mochi/mochi/`.)
 
 Then make sure the Mochi toolbar popup says connected.

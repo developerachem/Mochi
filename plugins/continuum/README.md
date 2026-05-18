@@ -69,7 +69,8 @@ TESTING.md                        # synthetic + multi-session real-Claude scenar
 ## Use
 
 ```bash
-claude --plugin-dir /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/plugins/continuum
+# From the repo root:
+claude --plugin-dir ./plugins/continuum
 ```
 
 Then in any project:

@@ -20,6 +20,9 @@ permissions:
 jobs:
   analyze:
     name: Analyze JavaScript
+    # CodeQL is free for public repos only. Skip on private to avoid spurious
+    # failures while the repo is still being prepped.
+    if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

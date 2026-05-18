@@ -12,7 +12,8 @@ Two layers of test:
 ## 1. Synthetic pipeline test (run first, every iteration)
 
 ```bash
-bash /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/plugins/continuum/tests/run-synthetic.sh
+# From the repo root:
+bash plugins/continuum/tests/run-synthetic.sh
 ```
 
 Exit code 0 means all 45 invariants passed. Failures print the assertion + the offending state.
@@ -28,7 +29,8 @@ This simulates Claude's hook lifecycle by feeding crafted JSON to each hook scri
 Use a **throwaway repo** so you can `rm -rf` it without regret. Plugin path stays the same.
 
 ```bash
-PLUGIN_DIR=/Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/plugins/continuum
+# Run from the repo root so $PWD resolves the plugin dir.
+PLUGIN_DIR="$PWD/plugins/continuum"
 TEST_REPO=/tmp/continuum-heavy-test
 rm -rf "$TEST_REPO" && mkdir "$TEST_REPO" && cd "$TEST_REPO" && git init -q
 ```
@@ -189,7 +191,7 @@ This part can't be fully synthetic-tested without Chrome. Run the synthetic e2e 
 #### Prereqs
 1. Load the Mochi extension in Chrome (`chrome://extensions` → Load unpacked → `extension/`).
 2. Start the Mochi server: `npm start` from repo root (binds broker on `127.0.0.1:9009`).
-3. Start Claude with the plugin in any repo: `claude --plugin-dir /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/plugins/continuum`.
+3. Start Claude with the plugin in any repo: `claude --plugin-dir "$PWD/plugins/continuum"` (run from the Super-Tester repo root, or substitute the absolute path you cloned to).
 
 #### Walkthrough
 
