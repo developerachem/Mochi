@@ -154,11 +154,57 @@
         min-height: 92px; resize: vertical; line-height: 1.5;
       }
       textarea::placeholder { color: var(--text-soft); }
-      select:focus, textarea:focus {
+      select:focus, textarea:focus, .hint-editor:focus {
         outline: none;
         border-color: var(--primary);
         box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
       }
+
+      /* contenteditable hint editor — looks like textarea but holds inline chips */
+      .hint-editor {
+        font-family: inherit; font-size: 13.5px; color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border-strong);
+        border-radius: 8px;
+        padding: 9px 11px;
+        min-height: 92px;
+        line-height: 1.5;
+        cursor: text;
+        overflow-y: auto;
+        max-height: 220px;
+        transition: border-color 120ms, box-shadow 120ms;
+        outline: none;
+      }
+      .hint-editor:empty::before {
+        content: attr(data-placeholder);
+        color: var(--text-soft);
+        pointer-events: none;
+      }
+
+      /* Inline reference chip embedded in the hint */
+      .ref-chip {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 1px 5px 1px 7px; margin: 0 1px;
+        background: var(--picked-bg);
+        border: 1px solid var(--picked-border);
+        border-radius: 5px;
+        color: var(--picked-text);
+        font-size: 11.5px;
+        font-family: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+        vertical-align: baseline;
+        user-select: none;
+        white-space: nowrap;
+        max-width: 200px; overflow: hidden;
+      }
+      .ref-chip .num { font-weight: 600; opacity: 0.85; }
+      .ref-chip .tag { opacity: 0.95; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+      .ref-chip .rm {
+        appearance: none; border: none; background: transparent;
+        padding: 0 2px; cursor: pointer;
+        color: inherit; opacity: 0.55; font-family: inherit; font-size: 12px;
+        line-height: 1; display: inline-flex; align-items: center;
+      }
+      .ref-chip .rm:hover { opacity: 1; }
       @media (prefers-color-scheme: dark) {
         select:focus, textarea:focus { box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25); }
       }
@@ -292,9 +338,9 @@
         </div>
         <div>
           <div class="field-label">Hint</div>
-          <textarea id="m-text" placeholder="What should the agent know? Lands as a system reminder on its next tool call."></textarea>
+          <div id="m-text" class="hint-editor" contenteditable="true" role="textbox" aria-multiline="true"
+               data-placeholder="What should the agent know? Press Pick element to inline-reference any element on the page."></div>
         </div>
-        <div id="m-picked-wrap" style="display:none;"></div>
         <div class="toggles">
           <div class="toggle-row">
             <div class="label">
@@ -356,8 +402,7 @@
   const backdrop = root.querySelector(".backdrop");
   const modal    = root.querySelector(".modal");
   const select   = root.querySelector("#m-session");
-  const textarea = root.querySelector("#m-text");
-  const pickedWrap = root.querySelector("#m-picked-wrap");
+  const editor   = root.querySelector("#m-text");
   const tUrl     = root.querySelector("#t-url");
   const tErrors  = root.querySelector("#t-errors");
   const tShot    = root.querySelector("#t-shot");
@@ -368,7 +413,12 @@
   const closeBtn = root.querySelector("#m-close");
   const status   = root.querySelector("#m-status");
 
-  let pickedElement = null;
+  // Each pick gets stored in a Map keyed by a unique chip-id (c1, c2, ...).
+  // The chip in the DOM holds the id in dataset.chipId. On send, we walk the
+  // editor and re-number chips by document order to produce stable [#1]..[#N]
+  // references in the outgoing message.
+  const pickedById = new Map();
+  let chipCounter = 0;
 
   function setStatus(text, cls = "") {
     status.textContent = text;
@@ -385,25 +435,78 @@
     return String(s).replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
   }
 
-  function renderPicked() {
-    if (!pickedElement) { pickedWrap.style.display = "none"; pickedWrap.innerHTML = ""; return; }
-    pickedWrap.style.display = "block";
-    pickedWrap.innerHTML = `
-      <div class="picked-chip">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>
-        <span class="selector">${escapeHtml(pickedElement.selector)}</span>
-        <button class="x-btn" title="Remove" aria-label="Remove picked element">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
-        </button>
-      </div>
-    `;
-    pickedWrap.querySelector(".x-btn").addEventListener("click", () => {
-      pickedElement = null;
-      renderPicked();
-      syncShotScope();
-      textarea.focus();
+  function chipRefIndexInDom(chipId) {
+    // Find this chip's position among all chips currently in the editor.
+    const chips = editor.querySelectorAll(`.ref-chip`);
+    for (let i = 0; i < chips.length; i++) {
+      if (chips[i].dataset.chipId === chipId) return i + 1;
+    }
+    return 0;
+  }
+
+  function renumberChips() {
+    // Update the visible #N label on every chip based on document order.
+    const chips = editor.querySelectorAll(".ref-chip");
+    for (let i = 0; i < chips.length; i++) {
+      const num = chips[i].querySelector(".num");
+      if (num) num.textContent = `#${i + 1}`;
+    }
+  }
+
+  function createChip(chipId, data) {
+    const chip = document.createElement("span");
+    chip.className = "ref-chip";
+    chip.contentEditable = "false";
+    chip.dataset.chipId = chipId;
+    chip.title = data.selector;
+    chip.innerHTML = `<span class="num">#1</span><span class="tag">${escapeHtml(data.tagName || "el")}</span><button class="rm" type="button" title="Remove" aria-label="Remove">×</button>`;
+    chip.querySelector(".rm").addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      pickedById.delete(chipId);
+      chip.remove();
+      renumberChips();
+      editor.focus();
     });
-    syncShotScope();
+    return chip;
+  }
+
+  // Cursor management — save the Range before the picker takes over the page.
+  let savedRange = null;
+  function saveCursor() {
+    try {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0) {
+        const r = sel.getRangeAt(0);
+        if (editor.contains(r.startContainer) || editor === r.startContainer) {
+          savedRange = r.cloneRange();
+          return;
+        }
+      }
+    } catch {}
+    savedRange = null;
+  }
+  function insertChipAtSavedCursor(chip) {
+    if (savedRange) {
+      try {
+        savedRange.deleteContents();
+        savedRange.insertNode(chip);
+        // Add a space after the chip so the user can keep typing immediately.
+        const space = document.createTextNode(" ");
+        chip.after(space);
+        // Move caret after the space.
+        const sel = window.getSelection();
+        const nr = document.createRange();
+        nr.setStartAfter(space);
+        nr.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(nr);
+        savedRange = null;
+        return;
+      } catch {}
+    }
+    // No saved range — append at end of editor.
+    editor.appendChild(chip);
+    editor.appendChild(document.createTextNode(" "));
   }
 
   async function loadSessions() {
@@ -443,17 +546,16 @@
   }
 
   // Compute the rect the screenshot should be cropped to, given the user's
-  // scope choice. All rects are CSS pixels relative to the viewport (matching
-  // getBoundingClientRect). Background re-scales by devicePixelRatio for the
-  // capture-image coordinate system.
+  // scope choice + the FIRST picked element (if any). All rects are CSS pixels
+  // relative to the viewport. Background re-scales by devicePixelRatio.
   function computeShotRect(scope) {
     const vp = { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
-    if (!pickedElement || scope === "viewport") return { scope: "viewport", rect: vp };
+    // Use the first picked element as the anchor for screenshot scope.
+    const firstPick = [...pickedById.values()][0];
+    if (!firstPick || scope === "viewport") return { scope: "viewport", rect: vp };
 
-    // Re-resolve the picked element by selector so we get a fresh rect (page
-    // may have scrolled since pick-time). If it's gone, fall back to viewport.
     let el = null;
-    try { el = document.querySelector(pickedElement.selector); } catch {}
+    try { el = document.querySelector(firstPick.selector); } catch {}
     if (!el) return { scope: "viewport", rect: vp };
 
     const elRect = el.getBoundingClientRect();
@@ -463,13 +565,11 @@
     if (scope === "element") return { scope: "element", rect: rectToObj(elRect, 12) };
     if (scope === "parent") {
       const p = grandparent || parent || el;
-      const r = p.getBoundingClientRect();
-      // If chosen parent is body/html, clamp to viewport
       if (p === document.body || p === document.documentElement) return { scope: "viewport", rect: vp };
-      return { scope: "parent", rect: rectToObj(r, 6) };
+      return { scope: "parent", rect: rectToObj(p.getBoundingClientRect(), 6) };
     }
 
-    // auto: pick grandparent unless it's huge (>=80% of viewport area).
+    // auto: prefer grandparent if it's <80% of viewport
     const vpArea = vp.width * vp.height;
     const candidates = [grandparent, parent].filter(Boolean);
     for (const c of candidates) {
@@ -493,11 +593,41 @@
     };
   }
 
+  // Walk the editor and build the outgoing message: plain text with
+  // [#N] markers where chips appear, plus the pickedElements array in
+  // matching order.
+  function buildMessageAndPicks() {
+    const elements = [];
+    let text = "";
+    const walk = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.nodeValue.replace(/ /g, " ");
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.classList?.contains("ref-chip")) {
+        const id = node.dataset.chipId;
+        const data = pickedById.get(id);
+        if (data) {
+          elements.push(data);
+          text += `[#${elements.length}]`;
+        }
+        return;
+      }
+      if (node.tagName === "BR") { text += "\n"; return; }
+      for (const child of node.childNodes) walk(child);
+      // Block-ish elements get a trailing newline
+      if (/^(DIV|P)$/.test(node.tagName)) text += "\n";
+    };
+    for (const child of editor.childNodes) walk(child);
+    return { message: text.trim(), pickedElements: elements };
+  }
+
   async function send() {
     const sessionId = select.value;
-    const message = textarea.value.trim();
+    const { message, pickedElements } = buildMessageAndPicks();
     if (!sessionId) { setStatus("Pick a session first.", "err"); return; }
-    if (!message) { setStatus("Type something first.", "err"); textarea.focus(); return; }
+    if (!message) { setStatus("Type something first.", "err"); editor.focus(); return; }
 
     setStatus("Sending…");
     sendBtn.disabled = true;
@@ -515,7 +645,7 @@
         sessionId, message,
         includeUrl: tUrl.checked,
         includeConsoleErrors: tErrors.checked,
-        domContext: pickedElement,
+        pickedElements,
         viewport: gatherViewport(),
         screenshotIntent,
       });
@@ -533,9 +663,8 @@
     }
   }
 
-  // Show/hide scope select based on screenshot toggle + element picked
   function syncShotScope() {
-    shotScopeRow.style.display = (tShot.checked && pickedElement) ? "flex" : "none";
+    shotScopeRow.style.display = (tShot.checked && pickedById.size > 0) ? "flex" : "none";
   }
   tShot.addEventListener("change", syncShotScope);
 
@@ -597,10 +726,15 @@
     ev.stopPropagation();
     const el = document.elementFromPoint(ev.clientX, ev.clientY);
     if (!el || el === host || host.contains(el)) { stopPicker(); return; }
-    pickedElement = serializeElement(el);
+    const data = serializeElement(el);
+    const chipId = `c${++chipCounter}`;
+    pickedById.set(chipId, data);
     stopPicker();
-    renderPicked();
-    textarea.focus();
+    const chip = createChip(chipId, data);
+    insertChipAtSavedCursor(chip);
+    renumberChips();
+    syncShotScope();
+    editor.focus();
   }
 
   function onPickerKey(ev) {
@@ -655,12 +789,16 @@
 
   closeBtn.addEventListener("click", close);
   backdrop.addEventListener("click", (e) => { if (e.target === backdrop && !pickerActive) close(); });
-  pickBtn.addEventListener("click", startPicker);
+  pickBtn.addEventListener("click", () => { saveCursor(); startPicker(); });
   sendBtn.addEventListener("click", send);
-  textarea.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); send(); }
-    if (e.key === "Escape" && !pickerActive) { e.preventDefault(); close(); }
+  editor.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); send(); return; }
+    if (e.key === "Escape" && !pickerActive) { e.preventDefault(); close(); return; }
   });
+  // Keep savedRange fresh as user types/clicks within the editor
+  editor.addEventListener("keyup", saveCursor);
+  editor.addEventListener("mouseup", saveCursor);
+  editor.addEventListener("blur", saveCursor);
   document.addEventListener("keydown", function escHandler(e) {
     if (e.key === "Escape" && !pickerActive && document.getElementById(HOST_ID)) {
       e.preventDefault();
@@ -672,7 +810,7 @@
   requestAnimationFrame(() => {
     backdrop.classList.add("shown");
     modal.classList.add("shown");
-    textarea.focus();
+    editor.focus();
   });
 
   loadSessions();

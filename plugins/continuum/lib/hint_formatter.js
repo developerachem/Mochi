@@ -69,16 +69,36 @@ export function formatHints(messages, projectDir, sessionId, opts = {}) {
       lines.push(`> _recent console errors:_`);
       for (const e of ctx.recentErrors.slice(0, 5)) lines.push(`>   • \`${String(e).replace(/`/g, "'")}\``);
     }
-    const el = ctx.pickedElement;
-    if (el && (el.selector || el.outerHTML)) {
-      lines.push(`> _user picked DOM element:_`);
-      if (el.selector)  lines.push(`>   • selector: \`${String(el.selector).replace(/`/g, "'")}\``);
-      if (el.tagName)   lines.push(`>   • tag: \`<${el.tagName}>\``);
-      if (el.rect)      lines.push(`>   • rect: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} @ (${Math.round(el.rect.x)},${Math.round(el.rect.y)})`);
-      if (el.text)      lines.push(`>   • text: "${String(el.text).slice(0, 120).replace(/"/g, "'")}${el.text.length > 120 ? "…" : ""}"`);
-      if (el.outerHTML) {
-        const snippet = String(el.outerHTML).slice(0, 400).replace(/\n/g, " ").replace(/`/g, "'");
-        lines.push(`>   • outerHTML: \`${snippet}${el.outerHTML.length > 400 ? "…" : ""}\``);
+    // Inline-reference array — preferred new shape. Each [#N] marker in the
+    // message above resolves to the corresponding entry here.
+    const picks = Array.isArray(ctx.pickedElements) ? ctx.pickedElements : null;
+    if (picks && picks.length) {
+      lines.push(`> _elements referenced inline:_`);
+      picks.forEach((el, i) => {
+        const n = i + 1;
+        lines.push(`>   **[#${n}]**`);
+        if (el.selector)  lines.push(`>     selector: \`${String(el.selector).replace(/`/g, "'")}\``);
+        if (el.tagName)   lines.push(`>     tag: \`<${el.tagName}>\``);
+        if (el.rect)      lines.push(`>     rect: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} @ (${Math.round(el.rect.x)},${Math.round(el.rect.y)})`);
+        if (el.text)      lines.push(`>     text: "${String(el.text).slice(0, 120).replace(/"/g, "'")}${el.text.length > 120 ? "…" : ""}"`);
+        if (el.outerHTML) {
+          const snippet = String(el.outerHTML).slice(0, 300).replace(/\n/g, " ").replace(/`/g, "'");
+          lines.push(`>     outerHTML: \`${snippet}${el.outerHTML.length > 300 ? "…" : ""}\``);
+        }
+      });
+    } else {
+      // Legacy single pickedElement path.
+      const el = ctx.pickedElement;
+      if (el && (el.selector || el.outerHTML)) {
+        lines.push(`> _user picked DOM element:_`);
+        if (el.selector)  lines.push(`>   • selector: \`${String(el.selector).replace(/`/g, "'")}\``);
+        if (el.tagName)   lines.push(`>   • tag: \`<${el.tagName}>\``);
+        if (el.rect)      lines.push(`>   • rect: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} @ (${Math.round(el.rect.x)},${Math.round(el.rect.y)})`);
+        if (el.text)      lines.push(`>   • text: "${String(el.text).slice(0, 120).replace(/"/g, "'")}${el.text.length > 120 ? "…" : ""}"`);
+        if (el.outerHTML) {
+          const snippet = String(el.outerHTML).slice(0, 400).replace(/\n/g, " ").replace(/`/g, "'");
+          lines.push(`>   • outerHTML: \`${snippet}${el.outerHTML.length > 400 ? "…" : ""}\``);
+        }
       }
     }
     const saved = saveScreenshotIfPresent(projectDir, sessionId, ctx);

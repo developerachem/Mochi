@@ -2131,6 +2131,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
         const wantUrl    = req.includeUrl !== undefined ? !!req.includeUrl    : legacy;
         const wantErrors = req.includeConsoleErrors !== undefined ? !!req.includeConsoleErrors : legacy;
         const domContext = (req.domContext && typeof req.domContext === "object") ? req.domContext : null;
+        const pickedElements = Array.isArray(req.pickedElements) ? req.pickedElements : null;
         const viewport   = (req.viewport && typeof req.viewport === "object") ? req.viewport : null;
         const shotIntent = (req.screenshotIntent && typeof req.screenshotIntent === "object") ? req.screenshotIntent : null;
         if (!sessionId || !message) {
@@ -2138,7 +2139,7 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
           return;
         }
         let context = null;
-        if (wantUrl || wantErrors || domContext || viewport || shotIntent) {
+        if (wantUrl || wantErrors || domContext || pickedElements || viewport || shotIntent) {
           context = {};
           if (wantUrl || wantErrors) {
             try {
@@ -2146,7 +2147,11 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
               if (pulled) Object.assign(context, pulled);
             } catch {}
           }
-          if (domContext) context.pickedElement = domContext;
+          // New: inline-reference array. Hook formatter renders these next to
+          // their [#N] markers in the message text.
+          if (pickedElements && pickedElements.length) context.pickedElements = pickedElements;
+          // Legacy: single pickedElement (still supported for popup form).
+          if (domContext && !pickedElements) context.pickedElement = domContext;
           if (viewport) context.viewport = viewport;
           if (shotIntent) {
             try {

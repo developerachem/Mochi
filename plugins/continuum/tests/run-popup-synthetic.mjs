@@ -283,6 +283,60 @@ console.log("T6.7 — screenshot context is saved to disk + referenced in hook o
   });
 }
 
+// ---- T10: inline-reference pickedElements array ----------------------------
+console.log("T10 — inline-references: message has [#1]/[#2] markers + numbered element blocks");
+{
+  await fetchJson("/claude/register", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID, name: "inline-refs", projectDir: REPO }),
+  });
+  await sleep(20);
+  await fetchJson("/claude/inbox", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: SESSION_ID,
+      message: "when we click [#1] then the counter [#2] should update",
+      context: {
+        pickedElements: [
+          {
+            selector: "button.add-to-cart#add",
+            tagName: "button",
+            outerHTML: '<button class="add-to-cart" id="add">Add</button>',
+            text: "Add",
+            rect: { x: 100, y: 100, width: 80, height: 32 },
+          },
+          {
+            selector: "span.cart-count",
+            tagName: "span",
+            outerHTML: '<span class="cart-count">0</span>',
+            text: "0",
+            rect: { x: 800, y: 20, width: 24, height: 16 },
+          },
+        ],
+      },
+    }),
+  });
+  await sleep(30);
+  const r = await runHook("pre_tool_use.js", {
+    session_id: SESSION_ID, cwd: REPO, hook_event_name: "PreToolUse", tool_name: "Read",
+  });
+  if (r.status !== 0 || !r.stdout) { bad(`hook failed: ${r.stderr}`); }
+  else {
+    const ctx = JSON.parse(r.stdout)?.hookSpecificOutput?.additionalContext || "";
+    ctx.includes("[#1]") && ctx.includes("[#2]")
+      ? ok("inline [#N] markers preserved in message") : bad("[#1]/[#2] missing in output");
+    ctx.includes("**[#1]**") ? ok("element block #1 rendered") : bad("[#1] block missing");
+    ctx.includes("**[#2]**") ? ok("element block #2 rendered") : bad("[#2] block missing");
+    ctx.includes("button.add-to-cart") ? ok("first element selector present") : bad("selector #1 missing");
+    ctx.includes("span.cart-count") ? ok("second element selector present") : bad("selector #2 missing");
+    ctx.includes("elements referenced inline") ? ok("intro header present") : bad("intro header missing");
+  }
+  await fetchJson("/claude/unregister", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID }),
+  });
+}
+
 // ---- T8: Stop hook blocks with hint as reason ------------------------------
 console.log("T8 — Stop hook drains inbox and emits {decision:block, reason}");
 {
