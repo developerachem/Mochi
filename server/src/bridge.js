@@ -21,6 +21,9 @@
 // client's session so tab groups don't leak.
 
 import { WebSocketServer, WebSocket } from "ws";
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 
 const HELLO_TIMEOUT_MS = 3000;
 const REQUEST_TIMEOUT_MS = 30000;
@@ -38,6 +41,7 @@ export class Bridge {
     this.closed = false;
 
     // Broker state ---------------------------------------------------------
+    this.httpServer = null;
     this.wss = null;
     this.extensionWs = null;
     this.extensionStandbys = []; // Set<WebSocket> — extras kept alive but inactive
@@ -46,6 +50,13 @@ export class Bridge {
     this.extPending = new Map(); // id → { resolve, reject, clientId? }
     this.extWaiters = [];        // unblocked when extension connects
     this.localClientId = null;
+
+    // Claude session registry (Continuum plugin <-> extension popup) -------
+    // Keyed by Claude Code session_id (from SessionStart hook payload), NOT
+    // by mcpClient connection — those are independent (our continuum MCP
+    // server is stdio-only and never connects to this broker).
+    this.claudeSessions = new Map(); // sessionId → {name, projectDir, registeredAt, lastActivity}
+    this.claudeInbox = new Map();    // sessionId → Array<{message, context, ts}>
 
     // Client state ---------------------------------------------------------
     this.brokerWs = null;
@@ -82,27 +93,221 @@ export class Bridge {
 
   _tryBecomeBroker(port, host, { preserveLocalClientId = false } = {}) {
     return new Promise((resolve) => {
-      const wss = new WebSocketServer({ port, host });
-      wss.once("error", (e) => {
-        // Port taken or some other failure → step aside.
-        if (e.code === "EADDRINUSE") return resolve("client");
-        this.lastError = e.message;
-        this.log(`[bridge] wss error: ${e.message}`);
+      // Shared HTTP server: handles /claude/* REST routes for the Continuum
+      // plugin AND hosts the WS upgrade path for the extension/MCP clients.
+      const server = http.createServer((req, res) => this._handleHttpRequest(req, res));
+      const wss = new WebSocketServer({ server });
+      // wss re-emits the underlying http server's errors. Attach a no-op
+      // BEFORE listen() so an EADDRINUSE doesn't crash the process via
+      // "Unhandled 'error' event" on the ws instance.
+      wss.on("error", () => {});
+      let settled = false;
+      const settleClient = (e) => {
+        if (settled) return; settled = true;
+        if (e?.code !== "EADDRINUSE") {
+          this.lastError = e?.message ?? String(e);
+          this.log(`[bridge] http server error: ${e?.message ?? e}`);
+        }
         resolve("client");
-      });
-      wss.once("listening", () => {
+      };
+      server.once("error", settleClient);
+      server.listen(port, host, () => {
+        if (settled) return; settled = true;
+        this.httpServer = server;
         this.wss = wss;
         this.mode = "broker";
         this.localClientId = preserveLocalClientId && this.localClientId
           ? this.localClientId
           : this._mintClientId("self");
-        this.log(`[bridge] broker bound ws://${host}:${port} (clientId=${this.localClientId})`);
+        this.log(`[bridge] broker bound ws://${host}:${port} + http://${host}:${port}/claude/* (clientId=${this.localClientId})`);
+        server.removeAllListeners("error");
+        server.on("error", (e) => this.log(`[bridge] http server error: ${e.message}`));
         wss.removeAllListeners("error");
         wss.on("error", (e) => this.log(`[bridge] wss error: ${e.message}`));
         wss.on("connection", (ws, req) => this._onBrokerConnection(ws, req));
         resolve("broker");
       });
     });
+  }
+
+  // ---------- Claude session registry (used by Continuum plugin) ----------
+
+  _registerClaudeSession(sessionId, { name, projectDir }) {
+    const now = new Date().toISOString();
+    const existing = this.claudeSessions.get(sessionId);
+    this.claudeSessions.set(sessionId, {
+      name: name || existing?.name || sessionId,
+      projectDir: projectDir || existing?.projectDir || null,
+      registeredAt: existing?.registeredAt || now,
+      lastActivity: now,
+    });
+    this._broadcastClaudeSessions();
+  }
+
+  _unregisterClaudeSession(sessionId) {
+    const had = this.claudeSessions.delete(sessionId);
+    this.claudeInbox.delete(sessionId);
+    if (had) this._broadcastClaudeSessions();
+    return had;
+  }
+
+  _renameClaudeSession(sessionId, name) {
+    const s = this.claudeSessions.get(sessionId);
+    if (!s) return false;
+    s.name = name;
+    s.lastActivity = new Date().toISOString();
+    this._broadcastClaudeSessions();
+    return true;
+  }
+
+  _pushClaudeMessage(sessionId, message, context) {
+    if (!this.claudeSessions.has(sessionId)) return false;
+    if (!this.claudeInbox.has(sessionId)) this.claudeInbox.set(sessionId, []);
+    this.claudeInbox.get(sessionId).push({
+      message: String(message ?? ""),
+      context: context && typeof context === "object" ? context : null,
+      ts: new Date().toISOString(),
+    });
+    const s = this.claudeSessions.get(sessionId);
+    s.lastActivity = new Date().toISOString();
+    this._writeInboxSentinel(sessionId);
+    this._broadcastClaudeSessions();
+    return true;
+  }
+
+  _drainClaudeInbox(sessionId) {
+    const queue = this.claudeInbox.get(sessionId) || [];
+    this.claudeInbox.delete(sessionId);
+    const s = this.claudeSessions.get(sessionId);
+    if (s) s.lastActivity = new Date().toISOString();
+    this._clearInboxSentinel(sessionId);
+    if (queue.length) this._broadcastClaudeSessions();
+    return queue;
+  }
+
+  // Sentinel file under <projectDir>/.continuum/.inbox-flag — lets the
+  // continuum plugin's PreToolUse hook skip the HTTP round-trip when the
+  // inbox is empty (which is essentially always). Best-effort; absence of
+  // the sentinel doesn't break correctness, only speed.
+  _writeInboxSentinel(sessionId) {
+    const info = this.claudeSessions.get(sessionId);
+    if (!info?.projectDir) return;
+    try {
+      const dir = path.join(info.projectDir, ".continuum");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, ".inbox-flag"), String(Date.now()));
+    } catch {}
+  }
+  _clearInboxSentinel(sessionId) {
+    const info = this.claudeSessions.get(sessionId);
+    if (!info?.projectDir) return;
+    try { fs.unlinkSync(path.join(info.projectDir, ".continuum", ".inbox-flag")); }
+    catch {}
+  }
+
+  _listClaudeSessions() {
+    const out = [];
+    for (const [sessionId, info] of this.claudeSessions) {
+      const queue = this.claudeInbox.get(sessionId) || [];
+      out.push({
+        sessionId,
+        name: info.name,
+        projectDir: info.projectDir,
+        registeredAt: info.registeredAt,
+        lastActivity: info.lastActivity,
+        queuedCount: queue.length,
+      });
+    }
+    return out;
+  }
+
+  _broadcastClaudeSessions() {
+    if (!this.extensionWs || this.extensionWs.readyState !== WebSocket.OPEN) return;
+    try {
+      this.extensionWs.send(JSON.stringify({
+        type: "claude_sessions_update",
+        sessions: this._listClaudeSessions(),
+      }));
+    } catch {}
+  }
+
+  // ---------------------- HTTP routes (/claude/*) -------------------------
+
+  _handleHttpRequest(req, res) {
+    let url;
+    try { url = new URL(req.url, `http://${req.headers.host || "127.0.0.1"}`); }
+    catch { res.writeHead(400).end(); return; }
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") { res.writeHead(204).end(); return; }
+
+    if (!url.pathname.startsWith("/claude/")) {
+      res.writeHead(404, { "Content-Type": "application/json" })
+         .end(JSON.stringify({ error: "not found" }));
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/claude/sessions") {
+      this._respondJson(res, 200, { sessions: this._listClaudeSessions() });
+      return;
+    }
+    if (req.method === "GET" && url.pathname === "/claude/inbox") {
+      const sessionId = url.searchParams.get("sessionId");
+      if (!sessionId) return this._respondJson(res, 400, { error: "sessionId required" });
+      this._respondJson(res, 200, { messages: this._drainClaudeInbox(sessionId) });
+      return;
+    }
+
+    if (req.method !== "POST") {
+      this._respondJson(res, 405, { error: "method not allowed" });
+      return;
+    }
+
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (c) => { if ((body += c).length > 1024 * 256) { req.destroy(); } });
+    req.on("end", () => {
+      let json = {};
+      if (body) {
+        try { json = JSON.parse(body); }
+        catch { return this._respondJson(res, 400, { error: "bad json" }); }
+      }
+      const p = url.pathname;
+      if (p === "/claude/register") {
+        const { sessionId, name, projectDir } = json;
+        if (!sessionId) return this._respondJson(res, 400, { error: "sessionId required" });
+        this._registerClaudeSession(sessionId, { name, projectDir });
+        return this._respondJson(res, 200, { ok: true });
+      }
+      if (p === "/claude/unregister") {
+        const { sessionId } = json;
+        if (!sessionId) return this._respondJson(res, 400, { error: "sessionId required" });
+        const had = this._unregisterClaudeSession(sessionId);
+        return this._respondJson(res, had ? 200 : 404, { ok: had });
+      }
+      if (p === "/claude/rename") {
+        const { sessionId, name } = json;
+        if (!sessionId || !name) return this._respondJson(res, 400, { error: "sessionId and name required" });
+        const ok = this._renameClaudeSession(sessionId, name);
+        return this._respondJson(res, ok ? 200 : 404, { ok });
+      }
+      if (p === "/claude/inbox") {
+        const { sessionId, message, context } = json;
+        if (!sessionId || !message) return this._respondJson(res, 400, { error: "sessionId and message required" });
+        const ok = this._pushClaudeMessage(sessionId, message, context);
+        return this._respondJson(res, ok ? 200 : 404, { ok });
+      }
+      this._respondJson(res, 404, { error: "not found" });
+    });
+    req.on("error", () => { try { res.destroy(); } catch {} });
+  }
+
+  _respondJson(res, status, body) {
+    if (res.headersSent || res.writableEnded) return;
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
   }
 
   _onBrokerConnection(ws) {
@@ -143,6 +348,8 @@ export class Bridge {
     this.extensionWs = ws;
     this.log("[bridge] extension connected (active)");
     this._wireExtensionMessages(ws);
+    // Send the current Claude-session registry so the popup has data immediately.
+    this._broadcastClaudeSessions();
 
     ws.on("close", () => {
       if (this.extensionWs !== ws) return;  // already replaced; nothing to do
@@ -189,6 +396,28 @@ export class Bridge {
       try { msg = JSON.parse(raw.toString()); } catch { return; }
       if (msg.type === "hello") return;
       if (msg.type === "request_takeover") return;  // already active, no-op
+
+      // Extension wants the current Claude-session registry list (e.g. popup just opened).
+      if (msg.type === "get_claude_sessions") {
+        try {
+          ws.send(JSON.stringify({
+            id: msg.id, ok: true,
+            result: { sessions: this._listClaudeSessions() },
+          }));
+        } catch {}
+        return;
+      }
+      // Extension is sending a hint into a Claude session's inbox.
+      if (msg.type === "send_claude_message") {
+        const ok = this._pushClaudeMessage(msg.sessionId, msg.message, msg.context);
+        try {
+          ws.send(JSON.stringify({
+            id: msg.id, ok, error: ok ? null : "no such session",
+          }));
+        } catch {}
+        return;
+      }
+
       const { id, ok, result, error } = msg;
       const p = this.extPending.get(id);
       if (!p) return;
@@ -524,6 +753,7 @@ export class Bridge {
     this._rejectBrokerPending("bridge shutting down");
     this._rejectBrokerWaiters("bridge shutting down");
     try { this.wss?.close(); } catch {}
+    try { this.httpServer?.close(); } catch {}
     try { this.extensionWs?.close(); } catch {}
     try { this.brokerWs?.close(); } catch {}
     for (const ws of this.mcpClients.values()) try { ws.close(); } catch {}
