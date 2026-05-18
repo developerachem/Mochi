@@ -1,0 +1,61 @@
+name: Build server bundle
+
+# Triggers on every push to the default branch. The bundled
+# server/dist/server.bundle.mjs is committed back so anyone who installs the
+# plugin via `/plugin install mochi@mochi` gets a runnable plugin without
+# needing `npm install`. The [skip ci] tag on the auto-commit prevents an
+# infinite trigger loop.
+
+on:
+  push:
+    branches: [Master, master, main]
+    paths-ignore:
+      - "server/dist/**"
+      - "**/*.md"
+      - ".github/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build + commit bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch enough history that the auto-commit step can push.
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install server deps
+        working-directory: server
+        run: npm ci || npm install
+
+      - name: Build server bundle
+        working-directory: server
+        run: npm run build
+
+      - name: Verify bundle produced
+        run: |
+          test -f server/dist/server.bundle.mjs
+          echo "Bundle size: $(du -h server/dist/server.bundle.mjs | cut -f1)"
+
+      - name: Commit bundle if it changed
+        run: |
+          if [[ -z "$(git status --porcelain server/dist/)" ]]; then
+            echo "No changes to bundle — skipping commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/dist/
+          git commit -m "ci(server): rebuild bundle [skip ci]
+
+          Auto-built by .github/workflows/build.yml from src/."
+          git push

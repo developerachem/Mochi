@@ -1,14 +1,15 @@
 {
-  "name": "super-tester-server",
-  "version": "0.1.0",
+  "name": "mochi-server",
+  "version": "0.3.0",
   "type": "module",
   "private": true,
-  "description": "MCP server for the Super-Tester browser bridge — speaks stdio MCP to AI clients and WebSocket to the Chrome extension.",
+  "description": "MCP server for the Mochi browser companion — speaks stdio MCP to AI clients and WebSocket to the Chrome extension. Bundled with esbuild into dist/server.bundle.mjs.",
   "bin": {
-    "super-tester": "src/index.js"
+    "mochi": "src/index.js"
   },
   "scripts": {
     "start": "node src/index.js",
+    "build": "esbuild src/index.js --bundle --platform=node --format=esm --target=node20 --outfile=dist/server.bundle.mjs --legal-comments=external --banner:js=\"import{createRequire as ___cr}from'node:module';const require=___cr(import.meta.url);\"",
     "test": "node _smoke.mjs && node _integration.mjs && node _multi-client.mjs",
     "test:smoke": "node _smoke.mjs",
     "test:integration": "node _integration.mjs",
@@ -17,10 +18,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "better-sqlite3": "^11.5.0",
     "ws": "^8.18.0"
   },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }

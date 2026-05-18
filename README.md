@@ -52,33 +52,50 @@ AI client (Claude Code / Cursor / …)
 | `extension/`  | Chrome MV3 extension. Owns the tab group, CDP attachments, and DOM helpers.      |
 | `mcp/`        | Reference clone of upstream Browser MCP (not used; archival).                    |
 
-Memory lives in **`<project-or-cwd>/.super-tester/memory.db`** by default
-(falls back to `~/.super-tester/memory.db` if no project root is detected).
-Override with `SUPER_TESTER_DB_PATH`.
+Memory (selector cache, workflows, runs) lives in **`<project>/.continuum/`**
+alongside the Continuum chain data — pure files, no database. Override with
+`SUPER_TESTER_DATA_DIR`.
 
 ## Install (one plugin, one extension, done)
 
-This is a Claude Code **plugin** named **mochi** that bundles everything:
-browser-automation MCP (`browser_*` tools), context-chain memory (Continuum),
-popup-driven hint messaging, hooks, and slash commands. Install the plugin and
-the Chrome extension — nothing else to wire up.
+**Mochi** is a Claude Code plugin bundling browser automation, context-chain
+memory, and popup hint messaging. The server is pre-bundled into a single
+file (`server/dist/server.bundle.mjs`) by GitHub Actions on every push to
+the default branch — so installing means cloning the repo. No `npm install`,
+no native binaries, no setup script.
 
-### One-time install
+### Install from GitHub (recommended)
+
+```text
+# Inside any Claude Code session:
+/plugin marketplace add DevZonayed/Super-Tester
+/plugin install mochi@mochi
+```
+
+That's it for the plugin. Then load the Chrome extension once:
+
+```text
+chrome://extensions → Developer mode → Load unpacked → select
+  ~/.claude/plugins/cache/mochi/mochi/0.3.0/extension
+```
+
+Restart Claude Code. Press **⌘⇧M** (macOS) or **Ctrl+Shift+M** (other) on
+any tab to send a hint with picked elements + screenshot.
+
+### Install from a local checkout (if hacking on the plugin itself)
+
+```text
+/plugin marketplace add /absolute/path/to/your/Super-Tester/checkout
+/plugin install mochi@mochi
+```
+
+If you change source files, rebuild the bundle before reloading:
 
 ```bash
-# 1. Register this checkout as a local marketplace (one line in your
-#    Claude Code session — replace with your actual path):
-/plugin marketplace add /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester
-
-# 2. Install the plugin from that marketplace:
-/plugin install mochi@mochi
-
-# 3. Load the Chrome extension:
-#    chrome://extensions → Developer mode → Load unpacked → select
-#    /Users/jonayedahamed/Desktop/Projects/Personal/Super-Tester/extension
-
-# 4. Restart Claude Code.
+cd /path/to/Super-Tester/server && npm install && npm run build
 ```
+
+Then `/reload-plugins` inside Claude (or `/plugin uninstall mochi && /plugin install mochi@mochi` for a clean refresh).
 
 The plugin auto-registers:
 - Two MCP servers — `browser` (automation tools) and `continuum` (recall tool)

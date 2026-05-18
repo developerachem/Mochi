@@ -4,7 +4,7 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "${CLAUDE_PLUGIN_ROOT}/server/src/index.js"
+        "${CLAUDE_PLUGIN_ROOT}/server/dist/server.bundle.mjs"
       ],
       "env": {
         "SUPER_TESTER_EXTENSION_PATH": "${CLAUDE_PLUGIN_ROOT}/extension"
@@ -19,3 +19,4 @@
     }
   }
 }
+
