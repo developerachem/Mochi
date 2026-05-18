@@ -13,7 +13,7 @@ You are writing a new link in the **continuum context chain** for this project. 
    - The previous link's `summary.md` (highest-numbered dir under `.continuum/chain/links/`) — so you don't repeat decisions already captured.
    - **Frontend verification status** (only if applicable):
      ```bash
-     node "${CLAUDE_SKILL_DIR}/../lib/verify_status_cli.js"
+     node "$(cat .continuum/.plugin-root)/lib/verify_status_cli.js"
      ```
      If this reports any UNVERIFIED frontend files or FAILURES, include them as **Open threads** in the new link summary so they survive into the next session. Don't silently skip — surfacing unfinished verification is the whole point of the loop.
 
@@ -44,7 +44,7 @@ You are writing a new link in the **continuum context chain** for this project. 
 3. **Write the link** by piping your summary to the helper, which handles ids, timestamps, git commit capture, and index update atomically:
 
    ```bash
-   cat <<'CONTINUUM_SUMMARY_EOF' | node "${CLAUDE_SKILL_DIR}/../lib/write_link.js" --tags "tag1,tag2"
+   cat <<'CONTINUUM_SUMMARY_EOF' | node "$(cat .continuum/.plugin-root)/lib/write_link.js" --tags "tag1,tag2"
    <YOUR SUMMARY MARKDOWN HERE>
    CONTINUUM_SUMMARY_EOF
    ```

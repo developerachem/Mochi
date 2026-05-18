@@ -409,14 +409,18 @@ echo "$ROUT" | grep -qF "Errors (1)" && ok "renderer surfaces errors" || fail "e
 
 rm -rf "$P3REPO"
 
-# ---- T29: no command file uses the un-substituted $CLAUDE_PLUGIN_ROOT --------
-# Slash command bodies don't expand ${CLAUDE_PLUGIN_ROOT}; only ${CLAUDE_SKILL_DIR}
-# is substituted (per the skills docs). Regression guard.
+# ---- T29: no command file uses unexpanded env vars for plugin path ----------
+# Real-Claude test (2026-05-18) showed neither $CLAUDE_PLUGIN_ROOT nor
+# ${CLAUDE_SKILL_DIR} resolve inside slash command bash blocks. Commands MUST
+# read .continuum/.plugin-root (written by SessionStart) instead.
 echo
-echo "T29 — no command file references the un-substituted \$CLAUDE_PLUGIN_ROOT"
-BAD=$(grep -l '\$CLAUDE_PLUGIN_ROOT' "$PLUGIN_DIR"/commands/*.md 2>/dev/null | wc -l | tr -d ' ')
-[ "$BAD" = "0" ] && ok "all command bodies use \${CLAUDE_SKILL_DIR} or .plugin-root" \
-  || fail "$BAD command file(s) still use \$CLAUDE_PLUGIN_ROOT — won't expand in slash command bash blocks"
+echo "T29 — no command file references unexpanded plugin-path env vars"
+BAD_PR=$(grep -l '\$CLAUDE_PLUGIN_ROOT' "$PLUGIN_DIR"/commands/*.md 2>/dev/null | wc -l | tr -d ' ')
+BAD_SD=$(grep -l 'CLAUDE_SKILL_DIR' "$PLUGIN_DIR"/commands/*.md 2>/dev/null | wc -l | tr -d ' ')
+[ "$BAD_PR" = "0" ] && ok "no command uses \$CLAUDE_PLUGIN_ROOT" || fail "$BAD_PR file(s) still use \$CLAUDE_PLUGIN_ROOT"
+[ "$BAD_SD" = "0" ] && ok "no command uses \${CLAUDE_SKILL_DIR}" || fail "$BAD_SD file(s) still use \${CLAUDE_SKILL_DIR}"
+USES=$(grep -l 'cat \.continuum/\.plugin-root' "$PLUGIN_DIR"/commands/*.md 2>/dev/null | wc -l | tr -d ' ')
+[ "$USES" = "7" ] && ok "all 7 commands use .continuum/.plugin-root" || fail "only $USES commands use the file path"
 
 # ---- Summary -----------------------------------------------------------------
 echo

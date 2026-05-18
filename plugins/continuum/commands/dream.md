@@ -11,7 +11,7 @@ You are performing a **rollup / dream** on the continuum chain: collapsing the l
 1. **Gather the input package** with the helper:
 
    ```bash
-   node "${CLAUDE_SKILL_DIR}/../lib/dream_prepare.js" --n ${ARGUMENTS:-25}
+   node "$(cat .continuum/.plugin-root)/lib/dream_prepare.js" --n ${ARGUMENTS:-25}
    ```
 
    Read the JSON output. Key fields:
@@ -51,7 +51,7 @@ You are performing a **rollup / dream** on the continuum chain: collapsing the l
 3. **Commit the rollup atomically** with the finalize helper:
 
    ```bash
-   cat <<'CONTINUUM_DIGEST_EOF' | node "${CLAUDE_SKILL_DIR}/../lib/dream_finalize.js" --rollup-ids "<comma-separated-ids>" --tags "phase-digest,<other-tags-from-tagsUnion>"
+   cat <<'CONTINUUM_DIGEST_EOF' | node "$(cat .continuum/.plugin-root)/lib/dream_finalize.js" --rollup-ids "<comma-separated-ids>" --tags "phase-digest,<other-tags-from-tagsUnion>"
    <YOUR DIGEST MARKDOWN HERE>
    CONTINUUM_DIGEST_EOF
    ```
