@@ -17,6 +17,7 @@ export function paths(projectDir) {
     linksDir: path.join(root, "chain", "links"),
     archiveDir: path.join(root, "archive", "transcripts"),
     feedbackDir: path.join(root, "feedback", "pending"),
+    screenshotsDir: path.join(root, "screenshots"),
     configJson: path.join(root, "config.json"),
     sessionIdFile: path.join(root, ".session-id"),
   };

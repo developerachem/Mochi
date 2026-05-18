@@ -231,6 +231,58 @@ console.log("T6.5 — picked DOM element flows through inbox → hook → additi
   });
 }
 
+// ---- T6.7: Screenshot data URI in context → saved to .continuum/screenshots ----
+console.log("T6.7 — screenshot context is saved to disk + referenced in hook output");
+{
+  await fetchJson("/claude/register", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID, name: "shot-test", projectDir: REPO }),
+  });
+  await sleep(20);
+  // 1x1 transparent PNG — smallest possible valid file.
+  const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  await fetchJson("/claude/inbox", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: SESSION_ID,
+      message: "see what's wrong here",
+      context: {
+        viewport: { innerWidth: 1280, innerHeight: 720, devicePixelRatio: 2, scrollY: 100, scrollX: 0, scrollHeight: 2000, scrollWidth: 1280 },
+        screenshot: {
+          dataUri: `data:image/png;base64,${TINY_PNG}`,
+          scope: "parent",
+          rect: { x: 100, y: 200, width: 320, height: 180 },
+          format: "png",
+        },
+      },
+    }),
+  });
+  await sleep(30);
+  const r = await runHook("pre_tool_use.js", {
+    session_id: SESSION_ID, cwd: REPO, hook_event_name: "PreToolUse", tool_name: "Read",
+  });
+  if (r.status !== 0 || !r.stdout) { bad(`hook failed: ${r.stderr}`); }
+  else {
+    const ctx = JSON.parse(r.stdout)?.hookSpecificOutput?.additionalContext || "";
+    ctx.includes("viewport: 1280×720 @2x") ? ok("viewport rendered with dpr") : bad("viewport line missing");
+    ctx.includes("scroll (0,100)") ? ok("scroll position rendered") : bad("scroll missing");
+    ctx.includes("page 1280×2000") ? ok("full page dims rendered") : bad("page dims missing");
+    ctx.includes("screenshot:") ? ok("screenshot mention present") : bad("screenshot mention missing");
+    ctx.includes("scope=parent") ? ok("scope reported") : bad("scope missing");
+    ctx.includes("Read(") ? ok("agent instructed to use Read") : bad("Read instruction missing");
+    // Confirm file actually exists on disk
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const shotDir = path.default.join(REPO, ".continuum", "screenshots");
+    const files = fs.default.existsSync(shotDir) ? fs.default.readdirSync(shotDir).filter(f => f.endsWith(".png")) : [];
+    files.length >= 1 ? ok(`screenshot file written (${files.length} on disk)`) : bad("no screenshot file");
+  }
+  await fetchJson("/claude/unregister", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID }),
+  });
+}
+
 // ---- T7: Hook silently no-ops if broker is offline -------------------------
 console.log("T7 — hooks survive when broker offline (use bogus URL)");
 {

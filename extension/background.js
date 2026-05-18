@@ -2041,6 +2041,52 @@ async function gatherBrowserContext({ url: wantUrl = true, errors: wantErrors = 
   return Object.keys(ctx).length ? ctx : null;
 }
 
+// Capture the visible viewport of `tabId` as a PNG data URI. If `rect` is
+// provided (CSS pixels relative to viewport), crop to it via OffscreenCanvas.
+// The capture is at device-pixel resolution, so we scale rect by dpr before
+// drawing. Returns null on any failure.
+async function captureCroppedScreenshot({ tabId, rect, dpr }) {
+  let dataUri;
+  try {
+    // captureVisibleTab does not actually require a tabId — it grabs whatever
+    // window-level tab is visible. We use the windowId derived from the tab.
+    const tab = await chrome.tabs.get(tabId);
+    dataUri = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+  } catch (e) {
+    console.warn("[mochi] captureVisibleTab failed:", e?.message ?? e);
+    return null;
+  }
+  if (!rect) return dataUri;
+  try {
+    const resp = await fetch(dataUri);
+    const blob = await resp.blob();
+    const bitmap = await createImageBitmap(blob);
+    // captureVisibleTab returns at device-pixel resolution. Our rect is in
+    // CSS pixels, so scale by dpr to find the source crop region. We rely on
+    // the modal's gatherViewport() to provide dpr — service worker has no
+    // `window` object to fall back to.
+    const ratio = dpr || 1;
+    const sx = Math.max(0, Math.round(rect.x * ratio));
+    const sy = Math.max(0, Math.round(rect.y * ratio));
+    const sw = Math.max(1, Math.min(bitmap.width  - sx, Math.round(rect.width  * ratio)));
+    const sh = Math.max(1, Math.min(bitmap.height - sy, Math.round(rect.height * ratio)));
+    const canvas = new OffscreenCanvas(sw, sh);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, sx, sy, sw, sh, 0, 0, sw, sh);
+    const outBlob = await canvas.convertToBlob({ type: "image/png" });
+    // Encode blob → data URI.
+    const reader = new FileReader();
+    return await new Promise((resolve, reject) => {
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(outBlob);
+    });
+  } catch (e) {
+    console.warn("[mochi] screenshot crop failed:", e?.message ?? e);
+    return dataUri; // fall back to full visible capture if cropping breaks
+  }
+}
+
 chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
   (async () => {
     try {
@@ -2085,12 +2131,14 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
         const wantUrl    = req.includeUrl !== undefined ? !!req.includeUrl    : legacy;
         const wantErrors = req.includeConsoleErrors !== undefined ? !!req.includeConsoleErrors : legacy;
         const domContext = (req.domContext && typeof req.domContext === "object") ? req.domContext : null;
+        const viewport   = (req.viewport && typeof req.viewport === "object") ? req.viewport : null;
+        const shotIntent = (req.screenshotIntent && typeof req.screenshotIntent === "object") ? req.screenshotIntent : null;
         if (!sessionId || !message) {
           sendResponse({ ok: false, error: "sessionId and message required" });
           return;
         }
         let context = null;
-        if (wantUrl || wantErrors || domContext) {
+        if (wantUrl || wantErrors || domContext || viewport || shotIntent) {
           context = {};
           if (wantUrl || wantErrors) {
             try {
@@ -2099,6 +2147,29 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
             } catch {}
           }
           if (domContext) context.pickedElement = domContext;
+          if (viewport) context.viewport = viewport;
+          if (shotIntent) {
+            try {
+              const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+              if (tab && tab.id) {
+                const dataUri = await captureCroppedScreenshot({
+                  tabId: tab.id,
+                  rect: shotIntent.rect,
+                  dpr: viewport?.devicePixelRatio,
+                });
+                if (dataUri) {
+                  context.screenshot = {
+                    dataUri,
+                    scope: shotIntent.scope,
+                    rect: shotIntent.rect,
+                    format: "png",
+                  };
+                }
+              }
+            } catch (e) {
+              console.warn("[mochi] screenshot intent failed:", e?.message ?? e);
+            }
+          }
         }
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           sendResponse({ ok: false, error: "broker not connected" });

@@ -14,6 +14,42 @@ import path from "node:path";
 import { paths } from "../lib/paths.js";
 import { drainInbox } from "../lib/broker.js";
 
+// Cap on screenshots kept on disk (oldest deleted). Each is typically
+// 20-200KB; 50 = ~10MB ceiling.
+const SCREENSHOT_KEEP = 50;
+
+function saveScreenshotIfPresent(projectDir, sessionId, ctx) {
+  const shot = ctx?.screenshot;
+  if (!shot || typeof shot.dataUri !== "string" || !shot.dataUri.startsWith("data:image/")) return null;
+  try {
+    const p = paths(projectDir);
+    fs.mkdirSync(p.screenshotsDir, { recursive: true });
+    // Trim oldest first
+    try {
+      const files = fs.readdirSync(p.screenshotsDir)
+        .filter((f) => f.endsWith(".png"))
+        .map((f) => ({ f, t: fs.statSync(path.join(p.screenshotsDir, f)).mtimeMs }))
+        .sort((a, b) => a.t - b.t);
+      while (files.length >= SCREENSHOT_KEEP) {
+        const oldest = files.shift();
+        try { fs.unlinkSync(path.join(p.screenshotsDir, oldest.f)); } catch {}
+      }
+    } catch {}
+    const m = shot.dataUri.match(/^data:image\/(png|jpeg|webp);base64,(.+)$/);
+    if (!m) return null;
+    const ext = m[1] === "jpeg" ? "jpg" : m[1];
+    const safeSession = String(sessionId || "anon").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 24);
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const fname = `${safeSession}-${ts}.${ext}`;
+    const full = path.join(p.screenshotsDir, fname);
+    fs.writeFileSync(full, Buffer.from(m[2], "base64"));
+    return { absPath: full, relPath: path.relative(projectDir, full), scope: shot.scope, rect: shot.rect, format: m[1] };
+  } catch (e) {
+    process.stderr.write(`[continuum:screenshot] save failed: ${e?.message ?? e}\n`);
+    return null;
+  }
+}
+
 async function readStdin() {
   return new Promise((resolve) => {
     let d = ""; process.stdin.setEncoding("utf8");
@@ -34,7 +70,7 @@ function emit(text) {
   process.exit(0);
 }
 
-function formatHints(messages) {
+function formatHints(messages, projectDir, sessionId) {
   const lines = [];
   lines.push("**Mochi**");
   lines.push("");
@@ -44,8 +80,16 @@ function formatHints(messages) {
     const bits = [];
     if (ctx.url)       bits.push(`url: \`${ctx.url}\``);
     if (ctx.title)     bits.push(`title: "${ctx.title}"`);
-    if (ctx.viewport)  bits.push(`viewport: ${ctx.viewport}`);
     if (bits.length)   lines.push(`> _${bits.join(" · ")}_`);
+    const vp = ctx.viewport;
+    if (vp && typeof vp === "object") {
+      const dprSuffix = vp.devicePixelRatio && vp.devicePixelRatio !== 1 ? ` @${vp.devicePixelRatio}x` : "";
+      const scrollSuffix = (vp.scrollY || vp.scrollX) ? ` · scroll (${vp.scrollX||0},${vp.scrollY||0})` : "";
+      const heightHint = vp.scrollHeight && vp.scrollHeight > vp.innerHeight ? ` · page ${vp.scrollWidth || "?"}×${vp.scrollHeight}` : "";
+      lines.push(`> _viewport: ${vp.innerWidth}×${vp.innerHeight}${dprSuffix}${scrollSuffix}${heightHint}_`);
+    } else if (typeof ctx.viewport === "string") {
+      lines.push(`> _viewport: ${ctx.viewport}_`);
+    }
     if (Array.isArray(ctx.recentErrors) && ctx.recentErrors.length) {
       lines.push(`> _recent console errors:_`);
       for (const e of ctx.recentErrors.slice(0, 5)) lines.push(`>   • \`${String(e).replace(/`/g, "'")}\``);
@@ -61,6 +105,11 @@ function formatHints(messages) {
         const snippet = String(el.outerHTML).slice(0, 400).replace(/\n/g, " ").replace(/`/g, "'");
         lines.push(`>   • outerHTML: \`${snippet}${el.outerHTML.length > 400 ? "…" : ""}\``);
       }
+    }
+    const saved = saveScreenshotIfPresent(projectDir, sessionId, ctx);
+    if (saved) {
+      const dims = saved.rect ? `${Math.round(saved.rect.width)}×${Math.round(saved.rect.height)}` : "?";
+      lines.push(`> _screenshot:_ \`${saved.relPath}\` (${dims}, scope=${saved.scope || "?"}) — use \`Read("${saved.relPath}")\` to view it.`);
     }
     lines.push(`> _sent ${m.ts}_`);
     lines.push("");
@@ -98,7 +147,7 @@ async function main() {
     process.exit(0); return;
   }
 
-  emit(formatHints(messages));
+  emit(formatHints(messages, projectDir, sessionId));
 }
 
 main().catch((err) => {

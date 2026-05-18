@@ -110,6 +110,7 @@ document.getElementById("claude-send-btn").addEventListener("click", async () =>
   const message = document.getElementById("claude-message").value;
   const includeUrl = document.getElementById("t-url").checked;
   const includeConsoleErrors = document.getElementById("t-errors").checked;
+  const includeShot = document.getElementById("t-shot").checked;
   const status = document.getElementById("claude-status");
 
   if (!sessionId) { status.className = "status err"; status.textContent = "No session selected."; return; }
@@ -118,10 +119,14 @@ document.getElementById("claude-send-btn").addEventListener("click", async () =>
   status.className = "status"; status.textContent = "Sending…";
   let res;
   try {
+    // Popup has no element picker, so screenshot scope is always the
+    // visible viewport. Background determines tab dpr from chrome.tabs.
+    const screenshotIntent = includeShot ? { scope: "viewport", rect: null } : null;
     res = await chrome.runtime.sendMessage({
       type: "popup_send_claude_message",
       sessionId, message: message.trim(),
       includeUrl, includeConsoleErrors,
+      screenshotIntent,
     });
   } catch (e) {
     status.className = "status err"; status.textContent = String(e?.message ?? e); return;

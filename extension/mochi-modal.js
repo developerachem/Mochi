@@ -316,6 +316,27 @@
               <span class="track"><span class="thumb"></span></span>
             </label>
           </div>
+          <div class="toggle-row">
+            <div class="label">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+              <span>Include screenshot</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="t-shot" />
+              <span class="track"><span class="thumb"></span></span>
+            </label>
+          </div>
+          <div class="toggle-row" id="shot-scope-row" style="display:none;">
+            <div class="label" style="margin-left:22px;">
+              <span style="font-size:11.5px;color:var(--text-muted);">Scope</span>
+            </div>
+            <select id="shot-scope" style="width:auto;padding:4px 22px 4px 8px;font-size:11.5px;">
+              <option value="auto">Auto (smart)</option>
+              <option value="element">Element only</option>
+              <option value="parent">Element + parent</option>
+              <option value="viewport">Visible viewport</option>
+            </select>
+          </div>
         </div>
         <div class="actions">
           <button class="btn" id="m-pick" title="Pick a DOM element to attach">
@@ -339,6 +360,9 @@
   const pickedWrap = root.querySelector("#m-picked-wrap");
   const tUrl     = root.querySelector("#t-url");
   const tErrors  = root.querySelector("#t-errors");
+  const tShot    = root.querySelector("#t-shot");
+  const shotScopeRow = root.querySelector("#shot-scope-row");
+  const shotScope = root.querySelector("#shot-scope");
   const pickBtn  = root.querySelector("#m-pick");
   const sendBtn  = root.querySelector("#m-send");
   const closeBtn = root.querySelector("#m-close");
@@ -376,8 +400,10 @@
     pickedWrap.querySelector(".x-btn").addEventListener("click", () => {
       pickedElement = null;
       renderPicked();
+      syncShotScope();
       textarea.focus();
     });
+    syncShotScope();
   }
 
   async function loadSessions() {
@@ -401,6 +427,72 @@
     sendBtn.disabled = false;
   }
 
+  function gatherViewport() {
+    return {
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      outerWidth: window.outerWidth,
+      outerHeight: window.outerHeight,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      scrollX: Math.round(window.scrollX),
+      scrollY: Math.round(window.scrollY),
+      scrollHeight: document.documentElement.scrollHeight,
+      scrollWidth: document.documentElement.scrollWidth,
+      screen: { width: screen.width, height: screen.height },
+    };
+  }
+
+  // Compute the rect the screenshot should be cropped to, given the user's
+  // scope choice. All rects are CSS pixels relative to the viewport (matching
+  // getBoundingClientRect). Background re-scales by devicePixelRatio for the
+  // capture-image coordinate system.
+  function computeShotRect(scope) {
+    const vp = { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight };
+    if (!pickedElement || scope === "viewport") return { scope: "viewport", rect: vp };
+
+    // Re-resolve the picked element by selector so we get a fresh rect (page
+    // may have scrolled since pick-time). If it's gone, fall back to viewport.
+    let el = null;
+    try { el = document.querySelector(pickedElement.selector); } catch {}
+    if (!el) return { scope: "viewport", rect: vp };
+
+    const elRect = el.getBoundingClientRect();
+    const parent = el.parentElement;
+    const grandparent = parent?.parentElement;
+
+    if (scope === "element") return { scope: "element", rect: rectToObj(elRect, 12) };
+    if (scope === "parent") {
+      const p = grandparent || parent || el;
+      const r = p.getBoundingClientRect();
+      // If chosen parent is body/html, clamp to viewport
+      if (p === document.body || p === document.documentElement) return { scope: "viewport", rect: vp };
+      return { scope: "parent", rect: rectToObj(r, 6) };
+    }
+
+    // auto: pick grandparent unless it's huge (>=80% of viewport area).
+    const vpArea = vp.width * vp.height;
+    const candidates = [grandparent, parent].filter(Boolean);
+    for (const c of candidates) {
+      if (c === document.body || c === document.documentElement) continue;
+      const r = c.getBoundingClientRect();
+      const area = Math.max(0, r.width) * Math.max(0, r.height);
+      if (area > 0 && area / vpArea < 0.8) {
+        const scopeName = c === grandparent ? "parent" : "element-parent";
+        return { scope: scopeName, rect: rectToObj(r, 6) };
+      }
+    }
+    return { scope: "viewport", rect: vp };
+  }
+
+  function rectToObj(r, pad = 0) {
+    return {
+      x: Math.max(0, r.x - pad),
+      y: Math.max(0, r.y - pad),
+      width:  Math.max(1, Math.min(window.innerWidth  - Math.max(0, r.x - pad), r.width  + pad * 2)),
+      height: Math.max(1, Math.min(window.innerHeight - Math.max(0, r.y - pad), r.height + pad * 2)),
+    };
+  }
+
   async function send() {
     const sessionId = select.value;
     const message = textarea.value.trim();
@@ -409,6 +501,13 @@
 
     setStatus("Sending…");
     sendBtn.disabled = true;
+
+    let screenshotIntent = null;
+    if (tShot.checked) {
+      const { scope, rect } = computeShotRect(shotScope.value);
+      screenshotIntent = { scope, rect };
+    }
+
     let res;
     try {
       res = await chrome.runtime.sendMessage({
@@ -417,6 +516,8 @@
         includeUrl: tUrl.checked,
         includeConsoleErrors: tErrors.checked,
         domContext: pickedElement,
+        viewport: gatherViewport(),
+        screenshotIntent,
       });
     } catch (e) {
       setStatus(`Send failed: ${e?.message ?? e}`, "err");
@@ -431,6 +532,12 @@
       setStatus(res?.error || "Send failed.", "err");
     }
   }
+
+  // Show/hide scope select based on screenshot toggle + element picked
+  function syncShotScope() {
+    shotScopeRow.style.display = (tShot.checked && pickedElement) ? "flex" : "none";
+  }
+  tShot.addEventListener("change", syncShotScope);
 
   // ---- Element picker ----
   let pickerOutline = null;
