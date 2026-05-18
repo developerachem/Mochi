@@ -1,0 +1,18 @@
+# Transient per-session files written by Continuum hooks. They get overwritten
+# on every SessionStart, so committing them would generate constant churn.
+.session-id
+.session-name
+.plugin-root
+.pending-checkpoint
+.inbox-flag
+.frontend-changes.jsonl
+
+# Per-session screenshots can pile up. Don't pollute history with them.
+screenshots/
+
+# Local-only feedback queue + flush log.
+feedback/
+
+# Chain archives are recoverable but large. Keep them local by default;
+# remove this line if you want to commit them for cross-device sync.
+archive/
