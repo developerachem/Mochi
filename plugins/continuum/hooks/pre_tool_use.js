@@ -50,6 +50,18 @@ function formatHints(messages) {
       lines.push(`> _recent console errors:_`);
       for (const e of ctx.recentErrors.slice(0, 5)) lines.push(`>   • \`${String(e).replace(/`/g, "'")}\``);
     }
+    const el = ctx.pickedElement;
+    if (el && (el.selector || el.outerHTML)) {
+      lines.push(`> _user picked DOM element:_`);
+      if (el.selector)  lines.push(`>   • selector: \`${String(el.selector).replace(/`/g, "'")}\``);
+      if (el.tagName)   lines.push(`>   • tag: \`<${el.tagName}>\``);
+      if (el.rect)      lines.push(`>   • rect: ${Math.round(el.rect.width)}×${Math.round(el.rect.height)} @ (${Math.round(el.rect.x)},${Math.round(el.rect.y)})`);
+      if (el.text)      lines.push(`>   • text: "${String(el.text).slice(0, 120).replace(/"/g, "'")}${el.text.length > 120 ? "…" : ""}"`);
+      if (el.outerHTML) {
+        const snippet = String(el.outerHTML).slice(0, 400).replace(/\n/g, " ").replace(/`/g, "'");
+        lines.push(`>   • outerHTML: \`${snippet}${el.outerHTML.length > 400 ? "…" : ""}\``);
+      }
+    }
     lines.push(`> _sent ${m.ts}_`);
     lines.push("");
   }
@@ -78,7 +90,13 @@ async function main() {
   if (!sessionId) { process.exit(0); return; }
 
   const { messages } = await drainInbox({ sessionId });
-  if (!messages || !messages.length) { process.exit(0); return; }
+  if (!messages || !messages.length) {
+    // Self-clean the sentinel if the broker didn't (e.g. session not
+    // registered on the broker side — orphan flag from a prior run). Without
+    // this, every tool call would re-hit HTTP for nothing.
+    try { fs.unlinkSync(sentinel); } catch {}
+    process.exit(0); return;
+  }
 
   emit(formatHints(messages));
 }

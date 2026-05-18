@@ -2075,13 +2075,18 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
         const sessionId = req.sessionId;
         const message = String(req.message ?? "").trim();
         const includeContext = !!req.includeContext;
+        const domContext = (req.domContext && typeof req.domContext === "object") ? req.domContext : null;
         if (!sessionId || !message) {
           sendResponse({ ok: false, error: "sessionId and message required" });
           return;
         }
         let context = null;
-        if (includeContext) {
-          try { context = await gatherBrowserContext(); } catch {}
+        if (includeContext || domContext) {
+          context = {};
+          if (includeContext) {
+            try { Object.assign(context, await gatherBrowserContext()); } catch {}
+          }
+          if (domContext) context.pickedElement = domContext;
         }
         if (!ws || ws.readyState !== WebSocket.OPEN) {
           sendResponse({ ok: false, error: "broker not connected" });
@@ -2108,4 +2113,31 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
     }
   })();
   return true;
+});
+
+// ---------- Keyboard-shortcut: open in-page send-hint modal ----------------
+// Triggered by chrome.commands (Cmd+Shift+M / Ctrl+Shift+M by default).
+// Injects mochi-modal.js into the active tab via chrome.scripting; the
+// modal lives in a shadow-DOM container so it doesn't inherit page styles.
+chrome.commands.onCommand.addListener(async (cmd) => {
+  if (cmd !== "open-send-hint-modal") return;
+  let tab;
+  try { [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); } catch {}
+  if (!tab || !tab.id) return;
+  // chrome:// and similar are restricted — don't try to inject.
+  if (tab.url && /^(chrome|edge|brave|chrome-extension|devtools|about):/i.test(tab.url)) {
+    try { chrome.action.setBadgeText({ text: "!", tabId: tab.id }); } catch {}
+    setTimeout(() => { try { chrome.action.setBadgeText({ text: "", tabId: tab.id }); } catch {} }, 1500);
+    return;
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ["mochi-modal.js"],
+    });
+  } catch (e) {
+    // Most common: page is in an isolated extension context we can't reach.
+    // Silent failure — user can still use the popup.
+    try { console.warn("[mochi] modal inject failed:", e?.message); } catch {}
+  }
 });

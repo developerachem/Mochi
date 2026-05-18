@@ -186,6 +186,51 @@ console.log("T6 — SessionEnd unregisters session");
   !stillThere ? ok("session removed from registry") : bad("session still in registry");
 }
 
+// ---- T6.5: Picked DOM element survives through to additionalContext -------
+console.log("T6.5 — picked DOM element flows through inbox → hook → additionalContext");
+{
+  // Re-register the session (T6 unregistered it).
+  await fetchJson("/claude/register", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID, name: "picker-test", projectDir: REPO }),
+  });
+  await sleep(20);
+  await fetchJson("/claude/inbox", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sessionId: SESSION_ID,
+      message: "fix this element",
+      context: {
+        url: "https://app/checkout",
+        pickedElement: {
+          selector: "div.cart-total#cart-total",
+          tagName: "div",
+          outerHTML: '<div class="cart-total" id="cart-total">$39</div>',
+          text: "$39",
+          rect: { x: 100, y: 200, width: 80, height: 24 },
+        },
+      },
+    }),
+  });
+  await sleep(30);
+  const r = await runHook("pre_tool_use.js", {
+    session_id: SESSION_ID, cwd: REPO, hook_event_name: "PreToolUse", tool_name: "Read",
+  });
+  if (r.status !== 0 || !r.stdout) { bad(`hook failed: ${r.stderr}`); }
+  else {
+    const ctx = JSON.parse(r.stdout)?.hookSpecificOutput?.additionalContext || "";
+    ctx.includes("user picked DOM element") ? ok("picked-element section rendered") : bad("element section missing");
+    ctx.includes("div.cart-total") ? ok("selector present in context") : bad("selector missing");
+    ctx.includes("80×24") ? ok("rect dimensions present") : bad("rect missing");
+    ctx.includes('"$39"') ? ok("text content present") : bad("text missing");
+  }
+  // Cleanup: unregister so T6 logic below is consistent
+  await fetchJson("/claude/unregister", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId: SESSION_ID }),
+  });
+}
+
 // ---- T7: Hook silently no-ops if broker is offline -------------------------
 console.log("T7 — hooks survive when broker offline (use bogus URL)");
 {

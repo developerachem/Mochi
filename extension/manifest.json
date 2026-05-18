@@ -32,5 +32,20 @@
       "48":  "icons/mochi-48.png",
       "128": "icons/mochi-128.png"
     }
-  }
+  },
+  "commands": {
+    "open-send-hint-modal": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+M",
+        "mac":     "Command+Shift+M"
+      },
+      "description": "Open the Mochi send-hint modal on the current page"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["mochi-modal.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
