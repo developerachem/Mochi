@@ -36,7 +36,7 @@ function emit(text) {
 
 function formatHints(messages) {
   const lines = [];
-  lines.push("**🐰 Mochi: hint(s) from popup**");
+  lines.push("**Mochi**");
   lines.push("");
   for (const m of messages) {
     lines.push(`> ${m.message || "(empty message)"}`);

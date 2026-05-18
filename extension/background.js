@@ -2007,33 +2007,38 @@ function waitForLoad(tabId) {
 // ---------------- popup messages ----------------
 
 // Snapshot of the currently-focused tab the user is looking at. Used by the
-// popup when "include browser context" is checked on a send-hint action.
-async function gatherBrowserContext() {
+// popup when "include current URL" / "include recent console errors" toggles
+// are on. Each toggle is independent — opts let callers request only the
+// subset they want.
+async function gatherBrowserContext({ url: wantUrl = true, errors: wantErrors = true } = {}) {
   let tab = null;
   try {
     const [t] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     tab = t || null;
   } catch {}
   if (!tab) return null;
-  const ctx = {
-    url: tab.url || null,
-    title: tab.title || null,
-    tabId: tab.id ?? null,
-    viewport: (tab.width && tab.height) ? `${tab.width}x${tab.height}` : null,
-  };
-  const buf = tabBuffers.get(tab.id);
-  if (buf && Array.isArray(buf.console)) {
-    const errors = [];
-    for (let i = buf.console.length - 1; i >= 0 && errors.length < 5; i--) {
-      const c = buf.console[i];
-      if (c.level === "error" || c.level === "warning" || c.source === "exception") {
-        const loc = c.url ? ` @ ${c.url}${c.line ? `:${c.line}` : ""}` : "";
-        errors.push(`[${c.level}] ${c.text}${loc}`);
-      }
-    }
-    if (errors.length) ctx.recentErrors = errors.reverse();
+  const ctx = {};
+  if (wantUrl) {
+    ctx.url = tab.url || null;
+    ctx.title = tab.title || null;
+    ctx.tabId = tab.id ?? null;
+    ctx.viewport = (tab.width && tab.height) ? `${tab.width}x${tab.height}` : null;
   }
-  return ctx;
+  if (wantErrors) {
+    const buf = tabBuffers.get(tab.id);
+    if (buf && Array.isArray(buf.console)) {
+      const errors = [];
+      for (let i = buf.console.length - 1; i >= 0 && errors.length < 5; i--) {
+        const c = buf.console[i];
+        if (c.level === "error" || c.level === "warning" || c.source === "exception") {
+          const loc = c.url ? ` @ ${c.url}${c.line ? `:${c.line}` : ""}` : "";
+          errors.push(`[${c.level}] ${c.text}${loc}`);
+        }
+      }
+      if (errors.length) ctx.recentErrors = errors.reverse();
+    }
+  }
+  return Object.keys(ctx).length ? ctx : null;
 }
 
 chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
@@ -2074,17 +2079,24 @@ chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
       } else if (req?.type === "popup_send_claude_message") {
         const sessionId = req.sessionId;
         const message = String(req.message ?? "").trim();
-        const includeContext = !!req.includeContext;
+        // Backward-compat: old popup.js sent `includeContext` as a single bool.
+        // New popup/modal send `includeUrl` + `includeConsoleErrors` separately.
+        const legacy = req.includeContext === true;
+        const wantUrl    = req.includeUrl !== undefined ? !!req.includeUrl    : legacy;
+        const wantErrors = req.includeConsoleErrors !== undefined ? !!req.includeConsoleErrors : legacy;
         const domContext = (req.domContext && typeof req.domContext === "object") ? req.domContext : null;
         if (!sessionId || !message) {
           sendResponse({ ok: false, error: "sessionId and message required" });
           return;
         }
         let context = null;
-        if (includeContext || domContext) {
+        if (wantUrl || wantErrors || domContext) {
           context = {};
-          if (includeContext) {
-            try { Object.assign(context, await gatherBrowserContext()); } catch {}
+          if (wantUrl || wantErrors) {
+            try {
+              const pulled = await gatherBrowserContext({ url: wantUrl, errors: wantErrors });
+              if (pulled) Object.assign(context, pulled);
+            } catch {}
           }
           if (domContext) context.pickedElement = domContext;
         }

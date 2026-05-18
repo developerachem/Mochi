@@ -1,3 +1,4 @@
+// ---------- Bridge status ----------
 async function refresh() {
   const res = await chrome.runtime.sendMessage({ type: "popup_status" });
   if (!res) return;
@@ -6,26 +7,30 @@ async function refresh() {
   const takeOverBtn = document.getElementById("take-over-btn");
   if (res.status === "connected" && res.role === "active") {
     dot.className = "dot ok";
-    text.textContent = "active";
+    text.textContent = "Active";
     takeOverBtn.style.display = "none";
   } else if (res.status === "connected" && res.role === "standby") {
     dot.className = "dot standby";
-    text.textContent = "standby (another profile is active)";
+    text.textContent = "Standby";
     takeOverBtn.style.display = "block";
   } else {
     dot.className = "dot bad";
-    text.textContent = "disconnected";
+    text.textContent = "Disconnected";
     takeOverBtn.style.display = "none";
   }
+
   const count = res.sessionCount ?? 0;
+  const sessionText = document.getElementById("session-text");
   if (count === 0) {
-    document.getElementById("session-text").textContent = "none";
+    sessionText.textContent = "none";
   } else {
     const tabs = (res.sessions ?? []).reduce((n, s) => n + s.tabCount, 0);
-    document.getElementById("session-text").textContent =
-      `${count} session${count > 1 ? "s" : ""}, ${tabs} tab${tabs !== 1 ? "s" : ""}`;
+    sessionText.textContent = `${count} session${count > 1 ? "s" : ""}, ${tabs} tab${tabs !== 1 ? "s" : ""}`;
   }
-  document.getElementById("enabled-text").textContent = res.connectionEnabled ? "on" : "off";
+
+  // Sync the auto-connect switch with state (only if user isn't actively toggling)
+  const sw = document.getElementById("auto-connect-switch");
+  if (sw && document.activeElement !== sw) sw.checked = !!res.connectionEnabled;
 }
 
 document.getElementById("take-over-btn").addEventListener("click", async () => {
@@ -34,6 +39,10 @@ document.getElementById("take-over-btn").addEventListener("click", async () => {
 });
 
 document.getElementById("toggle-btn").addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "popup_toggle" });
+  refresh();
+});
+document.getElementById("auto-connect-switch").addEventListener("change", async () => {
   await chrome.runtime.sendMessage({ type: "popup_toggle" });
   refresh();
 });
@@ -59,8 +68,6 @@ async function refreshClaudeSessions() {
   const form = document.getElementById("claude-form");
   const target = document.getElementById("claude-target");
 
-  // Render the list (rebuild — sessions are few; cheap)
-  // First, remove all .session-row children
   for (const el of list.querySelectorAll(".session-row")) el.remove();
 
   if (sessions.length === 0) {
@@ -70,24 +77,23 @@ async function refreshClaudeSessions() {
     return;
   }
   empty.style.display = "none";
-  form.style.display = "block";
+  form.style.display = "flex";
 
   for (const s of sessions) {
     const row = document.createElement("div");
     row.className = "session-row";
     const name = document.createElement("span");
     name.className = "session-name";
-    name.title = `${s.name} (${s.sessionId})`;
+    name.title = `${s.name} · ${s.sessionId}`;
     name.textContent = s.name || s.sessionId;
     const badge = document.createElement("span");
-    badge.className = "session-badge" + (s.queuedCount ? "" : " empty");
+    badge.className = "session-badge" + (s.queuedCount ? " queued" : "");
     badge.textContent = s.queuedCount > 0 ? `${s.queuedCount} queued` : "idle";
     row.appendChild(name);
     row.appendChild(badge);
-    list.appendChild(row);
+    list.insertBefore(row, empty);
   }
 
-  // Preserve current selection if still valid
   const prev = target.value;
   target.innerHTML = "";
   for (const s of sessions) {
@@ -102,36 +108,40 @@ async function refreshClaudeSessions() {
 document.getElementById("claude-send-btn").addEventListener("click", async () => {
   const sessionId = document.getElementById("claude-target").value;
   const message = document.getElementById("claude-message").value;
-  const includeContext = document.getElementById("claude-include-ctx").checked;
+  const includeUrl = document.getElementById("t-url").checked;
+  const includeConsoleErrors = document.getElementById("t-errors").checked;
   const status = document.getElementById("claude-status");
 
-  if (!sessionId) { status.className = "status err"; status.textContent = "no session selected"; return; }
-  if (!message.trim()) { status.className = "status err"; status.textContent = "type something first"; return; }
+  if (!sessionId) { status.className = "status err"; status.textContent = "No session selected."; return; }
+  if (!message.trim()) { status.className = "status err"; status.textContent = "Type something first."; return; }
 
-  status.className = "status"; status.textContent = "sending…";
+  status.className = "status"; status.textContent = "Sending…";
   let res;
   try {
     res = await chrome.runtime.sendMessage({
       type: "popup_send_claude_message",
-      sessionId, message: message.trim(), includeContext,
+      sessionId, message: message.trim(),
+      includeUrl, includeConsoleErrors,
     });
   } catch (e) {
     status.className = "status err"; status.textContent = String(e?.message ?? e); return;
   }
   if (res?.ok) {
     document.getElementById("claude-message").value = "";
-    status.className = "status";
-    status.textContent = "✓ delivered to inbox — agent will see it on its next tool call";
+    status.className = "status ok";
+    status.textContent = "Delivered. Agent will see it on its next tool call.";
     refreshClaudeSessions();
+    setTimeout(() => { status.textContent = ""; status.className = "status"; }, 3000);
   } else {
     status.className = "status err";
-    status.textContent = res?.error || "failed to send";
+    status.textContent = res?.error || "Send failed.";
   }
 });
 
 refreshClaudeSessions();
 setInterval(refreshClaudeSessions, 1500);
 
+// ---------- Visuals settings ----------
 async function loadVisuals() {
   const v = (await chrome.storage.local.get(["visualsDefault"])).visualsDefault
     ?? { enabled: true, cursor: true, hud: true, slowMo: 0 };
