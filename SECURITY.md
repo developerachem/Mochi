@@ -6,7 +6,7 @@ Thanks for helping keep Mochi and its users safe.
 
 **Please do not file public GitHub issues for security vulnerabilities.**
 
-Instead, report them privately via GitHub's **[Security Advisories](https://github.com/DevZonayed/Super-Tester/security/advisories/new)** form. This sends the report directly to maintainers without exposing it publicly.
+Instead, report them privately via GitHub's **[Security Advisories](https://github.com/DevZonayed/Mochi/security/advisories/new)** form. This sends the report directly to maintainers without exposing it publicly.
 
 If you cannot use GitHub Security Advisories, email **dev.jonayed@gmail.com** with `[mochi-security]` in the subject line.
 

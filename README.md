@@ -68,7 +68,7 @@ no native binaries, no setup script.
 
 ```text
 # Inside any Claude Code session:
-/plugin marketplace add DevZonayed/Super-Tester
+/plugin marketplace add DevZonayed/Mochi
 /plugin install mochi@mochi
 ```
 

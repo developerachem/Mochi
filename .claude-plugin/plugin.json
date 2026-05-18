@@ -6,7 +6,7 @@
     "name": "Jonayed Ahamed",
     "email": "dev.jonayed@gmail.com"
   },
-  "homepage": "https://github.com/DevZonayed/Super-Tester",
+  "homepage": "https://github.com/DevZonayed/Mochi",
   "keywords": ["browser", "automation", "qa", "testing", "memory", "continuum", "mcp", "chrome"],
   "commands": [
     "./plugins/continuum/commands/checkpoint.md",
