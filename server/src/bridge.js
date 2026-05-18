@@ -206,8 +206,17 @@ export class Bridge {
   }
 
   _listClaudeSessions() {
+    // Filter out sessions whose lastActivity is older than CLAUDE_SESSION_TTL_MS
+    // (default 10 min). This keeps the extension popup clean when SessionEnd
+    // didn't run (terminal killed, OS crash, test that registered then died).
+    // GC-on-read keeps the registry tidy without a background timer.
+    const ttlMs = Number(process.env.CLAUDE_SESSION_TTL_MS || 600_000);
+    const cutoff = Date.now() - ttlMs;
     const out = [];
+    const stale = [];
     for (const [sessionId, info] of this.claudeSessions) {
+      const last = Date.parse(info.lastActivity) || 0;
+      if (last < cutoff) { stale.push(sessionId); continue; }
       const queue = this.claudeInbox.get(sessionId) || [];
       out.push({
         sessionId,
@@ -217,6 +226,10 @@ export class Bridge {
         lastActivity: info.lastActivity,
         queuedCount: queue.length,
       });
+    }
+    for (const id of stale) {
+      this.claudeSessions.delete(id);
+      this.claudeInbox.delete(id);
     }
     return out;
   }
@@ -459,6 +472,8 @@ export class Bridge {
     this.extensionWs = requestingWs;
     requestingWs.removeAllListeners("message");
     this._wireExtensionMessages(requestingWs);
+    // Send fresh state so the just-promoted extension's popup is current.
+    this._broadcastClaudeSessions();
     requestingWs.removeAllListeners("close");
     requestingWs.on("close", () => {
       if (this.extensionWs !== requestingWs) return;
@@ -482,6 +497,8 @@ export class Bridge {
     const next = this.extensionStandbys.shift();
     if (!next) return;
     this.extensionWs = next;
+    // Send fresh state so the newly-promoted extension's popup shows reality.
+    this._broadcastClaudeSessions();
     next.removeAllListeners("message");
     this._wireExtensionMessages(next);
     next.removeAllListeners("close");

@@ -7,6 +7,12 @@
 # Exit:  0 on all-pass, 1 on first failure.
 
 set -u
+# Point hook subprocesses at an unreachable broker so SessionStart's register
+# call silently times out — otherwise the user's running Mochi broker on the
+# default port 9009 accumulates ghost test sessions. (See bug 2026-05-18.)
+export CONTINUUM_BROKER_URL="http://127.0.0.1:1"
+export CONTINUUM_BROKER_TIMEOUT_MS="100"
+
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d -t continuum-synth.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
@@ -45,7 +51,8 @@ echo
 echo "T1 — SessionStart (no .continuum/) emits bootstrap directive"
 OUT="$(run_hook hooks/session_start.js "{\"session_id\":\"s1\",\"transcript_path\":\"$TRANSCRIPT\",\"cwd\":\"$REPO\",\"hook_event_name\":\"SessionStart\",\"source\":\"startup\"}")"
 CTX="$(echo "$OUT" | extract_ctx)"
-echo "$CTX" | grep -q "No context chain found" && ok "bootstrap directive present" || { fail "missing bootstrap directive"; log "OUT: $OUT"; }
+echo "$CTX" | grep -q "No context chain" && ok "bootstrap directive present" || { fail "missing bootstrap directive"; log "OUT: $OUT"; }
+echo "$CTX" | grep -qE "bootstrap it NOW|finish bootstrap BEFORE" && ok "directive is imperative (no negotiation)" || fail "bootstrap directive is too soft — agent may defer"
 [ -f "$REPO/.continuum/.session-id" ] && ok "session-id file written" || fail "session-id not written"
 
 # ---- T2: write_link.js creates link 0001 ------------------------------------
