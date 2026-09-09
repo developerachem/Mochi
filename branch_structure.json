@@ -1,0 +1,30 @@
+{
+  "default_branch": "Master",
+  "branches": [
+    "Master",
+    "dependabot/github_actions/actions/checkout-6",
+    "dependabot/github_actions/actions/setup-node-6",
+    "dependabot/github_actions/github/codeql-action-4",
+    "dependabot/npm_and_yarn/server/pixelmatch-7.2.0",
+    "dependabot/npm_and_yarn/server/undici-8.3.0",
+    "dependabot/npm_and_yarn/server/ws-8.21.0"
+  ],
+  "parent": {
+    "Master": null,
+    "dependabot/github_actions/actions/checkout-6": "Master",
+    "dependabot/github_actions/actions/setup-node-6": "Master",
+    "dependabot/github_actions/github/codeql-action-4": "Master",
+    "dependabot/npm_and_yarn/server/pixelmatch-7.2.0": "Master",
+    "dependabot/npm_and_yarn/server/undici-8.3.0": "Master",
+    "dependabot/npm_and_yarn/server/ws-8.21.0": "Master"
+  },
+  "order": [
+    "Master",
+    "dependabot/github_actions/actions/checkout-6",
+    "dependabot/github_actions/actions/setup-node-6",
+    "dependabot/github_actions/github/codeql-action-4",
+    "dependabot/npm_and_yarn/server/pixelmatch-7.2.0",
+    "dependabot/npm_and_yarn/server/undici-8.3.0",
+    "dependabot/npm_and_yarn/server/ws-8.21.0"
+  ]
+}
